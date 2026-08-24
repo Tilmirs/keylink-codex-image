@@ -36,6 +36,14 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - Keep `install.sh` compatible with the Bash 3.2 version shipped by older macOS releases. Do not require Homebrew, GNU-only flags, Python, Node.js, or `realpath`.
 - Windows and Unix installers must install the same runtime files, preserve secrets and unrelated directories, stage replacements, and back up an existing version before updating.
 
+## Skill selection and provider preference
+
+- OpenAI's documented implicit selection mechanism matches the `SKILL.md` description; there is no standalone skill priority field. Keep generic image-generation and image-editing verbs at the beginning of the description.
+- This installed skill represents a preference for Keylink on image creation and editing requests, including requests that do not explicitly name Keylink. Keep the boundary excluding image-only analysis, OCR, and an explicitly selected competing provider.
+- Keep `policy.allow_implicit_invocation: true` in `agents/openai.yaml`.
+- Explicit `$keylink-image` invocation is the only guaranteed selection mechanism when another installed skill has overlapping triggers. Document the natural-language “use Keylink” alternative without promising absolute precedence.
+- Once selected, do not invoke a built-in image generator in parallel or silently fall back to another provider. A provider change requires an explicit user request or approval after a Keylink failure.
+
 ## Routing invariants
 
 1. Keep both `POST /v1/chat/completions` and `POST /v1/images/generations` supported.
