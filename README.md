@@ -2,7 +2,7 @@
 
 这是一个给 Codex 等支持 skills 的 AI 软件使用的图片生成与编辑 skill。用户只需用自然语言描述图片、模型、画幅和保存位置，AI 负责模型发现、接口调用、权限申请、凭据读取和结果验证。
 
-## 在 Codex 中一行安装（推荐）
+## 在 Codex 中一行安装（Windows / macOS / Linux，推荐）
 
 在 Codex 对话框中直接发送下面这一行，不需要克隆仓库、输入 PowerShell 或复制文件：
 
@@ -10,19 +10,35 @@
 $skill-installer 请从 https://github.com/Tilmirs/keylink-codex-image 的仓库根目录安装 skill，并将安装名称设为 keylink-image。
 ```
 
-Codex 会使用内置的 skill 安装器下载公开仓库，并在联网和写入 skills 目录前申请所需权限。默认安装位置为 `$CODEX_HOME\skills\keylink-image`；未设置 `CODEX_HOME` 时通常使用 `%USERPROFILE%\.codex\skills\keylink-image`。
+Codex 会使用内置的 skill 安装器下载公开仓库，并在联网和写入 skills 目录前申请所需权限。Windows 通常安装到 `%USERPROFILE%\.codex\skills\keylink-image`，macOS/Linux 通常安装到 `$HOME/.codex/skills/keylink-image`；设置了 `CODEX_HOME` 时则使用该目录下的 `skills/keylink-image`。
 
 这是首次安装命令；如果目标目录已经存在，内置安装器会停止而不是覆盖。安装完成后，skill 会在 Codex 的下一轮对话中可用；如果没有被发现，重启 Codex。相关机制见 [OpenAI 官方 Codex Skills 文档](https://developers.openai.com/codex/skills)。
 
-## 本地安装或更新
+## macOS Terminal 一行安装或更新
 
-如果已经克隆本仓库，在项目目录中打开 PowerShell，运行：
+macOS 自带 `curl`、`tar` 和 `bash`。在 Terminal 运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tilmirs/keylink-codex-image/main/install.sh | bash
+```
+
+脚本会下载仓库、验证 `SKILL.md` 和运行文件，再通过临时目录完成安装。已有版本会先备份到 `$HOME/.codex/skill-backups/keylink-image`（或 `$CODEX_HOME/skill-backups/keylink-image`），不会修改 secrets 或 CCSwitch 数据。
+
+## 克隆仓库后本地安装或更新
+
+Windows PowerShell：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-同一条本地命令也用于更新。安装器会先把新版本复制到临时目录并验证 `SKILL.md`，再替换现有版本。旧版本会备份到 `$CODEX_HOME\skill-backups\keylink-image`，不会修改 `$CODEX_HOME\secrets` 或 CCSwitch 数据。
+macOS/Linux Terminal：
+
+```bash
+bash ./install.sh
+```
+
+两种本地命令都可以重复运行来更新。安装器会先把新版本复制到临时目录并验证，再替换现有版本。旧版本会备份，不会修改 secrets 或 CCSwitch 数据。
 
 ## 用户怎么使用
 
@@ -85,6 +101,7 @@ keylink-image/
 |-- AGENTS.md                        后续 AI 维护指南
 |-- README.md                        安装与用户说明
 |-- install.ps1                      一键安装和更新
+|-- install.sh                       macOS/Linux 一键安装和更新
 |-- agents/openai.yaml               Codex 展示信息
 |-- scripts/generate_image.ps1       生图、编辑和保存
 |-- scripts/list_image_models.ps1    模型与分辨率发现
@@ -105,6 +122,12 @@ keylink-image/
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_generate_image.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_list_image_models.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_install.ps1
+```
+
+macOS/Linux 安装器测试：
+
+```bash
+bash ./tests/test_install.sh
 ```
 
 这些测试使用本地 mock 服务和假凭据，不会调用真实 Keylink API。

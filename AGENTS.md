@@ -24,13 +24,17 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 | `references/troubleshooting.md` | Failure classification and safe recovery guidance. |
 | `tests/` | Offline mock-server tests. Tests must not call the live Keylink API. |
 | `install.ps1` | Repeatable local install/update with staging and backup. |
+| `install.sh` | Repeatable macOS/Linux install/update and remote bootstrap from the public GitHub archive. |
 
 ## Installation documentation
 
 - Keep the recommended first-install prompt in `README.md` based on Codex's built-in `$skill-installer` workflow.
 - Because the skill lives at the repository root, the installer must use repository path `.` and explicit destination name `keylink-image`.
 - Do not document a nonexistent `codex skills install` shell subcommand. Verify current behavior against the official Codex Skills documentation before changing installation instructions.
-- The built-in installer is for first installation and stops when the destination exists. Keep `install.ps1` documented as the repeatable local installation and update path.
+- The built-in installer is for first installation and stops when the destination exists. Keep `install.ps1` and `install.sh` documented as repeatable local installation and update paths.
+- Keep the macOS Terminal one-liner pinned to the raw `install.sh` on this repository's `main` branch. The script must validate the downloaded package before replacing an installation.
+- Keep `install.sh` compatible with the Bash 3.2 version shipped by older macOS releases. Do not require Homebrew, GNU-only flags, Python, Node.js, or `realpath`.
+- Windows and Unix installers must install the same runtime files, preserve secrets and unrelated directories, stage replacements, and back up an existing version before updating.
 
 ## Routing invariants
 
@@ -81,6 +85,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_generate_image.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_list_image_models.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_install.ps1
 python "$env:USERPROFILE\.codex\skills\.system\skill-creator\scripts\quick_validate.py" .
+```
+
+On macOS/Linux, also run:
+
+```bash
+bash ./tests/test_install.sh
+python3 "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" .
 ```
 
 If `python` is not on `PATH`, use the Python executable returned by Codex's workspace-dependency loader. Also parse every PowerShell file with the PowerShell AST before release. Keep tests offline, use obvious fake credentials, and scan the repository for accidentally committed secrets.
