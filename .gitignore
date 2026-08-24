@@ -1,0 +1,19 @@
+# Credentials
+*.key
+*.secret
+.env
+.env.*
+
+# Generated images
+keylink-image-*.png
+keylink-image-*.jpg
+keylink-image-*.jpeg
+keylink-image-*.webp
+keylink-image-*.gif
+keylink-image-*.avif
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
