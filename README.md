@@ -2,27 +2,27 @@
 
 这是一个给 Codex 等支持 skills 的 AI 软件使用的图片生成与编辑 skill。用户只需用自然语言描述图片、模型、画幅和保存位置，AI 负责模型发现、接口调用、权限申请、凭据读取和结果验证。
 
-## 一条命令安装
+## 在 Codex 中一行安装（推荐）
 
-在本项目目录中打开 PowerShell，运行：
+在 Codex 对话框中直接发送下面这一行，不需要克隆仓库、输入 PowerShell 或复制文件：
+
+```text
+$skill-installer 请从 https://github.com/Tilmirs/keylink-codex-image 的仓库根目录安装 skill，并将安装名称设为 keylink-image。
+```
+
+Codex 会使用内置的 skill 安装器下载公开仓库，并在联网和写入 skills 目录前申请所需权限。默认安装位置为 `$CODEX_HOME\skills\keylink-image`；未设置 `CODEX_HOME` 时通常使用 `%USERPROFILE%\.codex\skills\keylink-image`。
+
+这是首次安装命令；如果目标目录已经存在，内置安装器会停止而不是覆盖。安装完成后，skill 会在 Codex 的下一轮对话中可用；如果没有被发现，重启 Codex。相关机制见 [OpenAI 官方 Codex Skills 文档](https://developers.openai.com/codex/skills)。
+
+## 本地安装或更新
+
+如果已经克隆本仓库，在项目目录中打开 PowerShell，运行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装位置为 `$CODEX_HOME\skills\keylink-image`；未设置 `CODEX_HOME` 时使用 `%USERPROFILE%\.codex\skills\keylink-image`。
-
-同一条命令也用于更新。安装器会先把新版本复制到临时目录并验证 `SKILL.md`，再替换现有版本。旧版本会备份到 `$CODEX_HOME\skill-backups\keylink-image`，不会修改 `$CODEX_HOME\secrets` 或 CCSwitch 数据。安装完成后，新 skill 会在 Codex 的下一轮对话中可用；如果没有被发现，重启 Codex。
-
-## 从 GitHub 安装
-
-仓库发布后，在 Codex 中直接发送下面这句话即可，不需要自己输入脚本或复制文件：
-
-```text
-请从 https://github.com/Tilmirs/keylink-codex-image 安装 keylink-image skill。
-```
-
-Codex 会使用内置的 skill 安装流程，并在写入 skills 目录前申请所需权限。
+同一条本地命令也用于更新。安装器会先把新版本复制到临时目录并验证 `SKILL.md`，再替换现有版本。旧版本会备份到 `$CODEX_HOME\skill-backups\keylink-image`，不会修改 `$CODEX_HOME\secrets` 或 CCSwitch 数据。
 
 ## 用户怎么使用
 

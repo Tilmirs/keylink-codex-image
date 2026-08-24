@@ -25,6 +25,13 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 | `tests/` | Offline mock-server tests. Tests must not call the live Keylink API. |
 | `install.ps1` | Repeatable local install/update with staging and backup. |
 
+## Installation documentation
+
+- Keep the recommended first-install prompt in `README.md` based on Codex's built-in `$skill-installer` workflow.
+- Because the skill lives at the repository root, the installer must use repository path `.` and explicit destination name `keylink-image`.
+- Do not document a nonexistent `codex skills install` shell subcommand. Verify current behavior against the official Codex Skills documentation before changing installation instructions.
+- The built-in installer is for first installation and stops when the destination exists. Keep `install.ps1` documented as the repeatable local installation and update path.
+
 ## Routing invariants
 
 1. Keep both `POST /v1/chat/completions` and `POST /v1/images/generations` supported.
