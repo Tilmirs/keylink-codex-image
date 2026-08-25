@@ -5,11 +5,84 @@ const fs = require('node:fs');
 const path = require('node:path');
 const common = require('./keylink_common');
 
-const knownImageModels = new Set(['gpt-image-2', 'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-3.1-flash-image']);
+// These are routing hints only.  The service catalog remains authoritative for
+// actual availability and resolution support.  The GPT aliases are included so
+// an explicitly selected, service-documented variant still uses Images rather
+// than silently falling back to Chat.
+const knownImageModels = new Set([
+  'gpt-image-2', 'gpt-image-2-openai', 'gpt-image-2-2k', 'gpt-image-2-pro', 'gpt-image-2-4k',
+  'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-3.1-flash-image',
+]);
+const conservativeSizes = {
+  square: ['1024x1024'],
+  landscape: ['1536x1024', '1024x1024'],
+  portrait: ['1024x1536', '1024x1024'],
+};
 const mimeTypes = { '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
 const editInstruction = 'Edit the supplied image according to the user instruction. Preserve all content the user did not ask to change. Return the edited image itself, not a description or instructions.';
 
 function fail(message) { throw new Error(message); }
+
+function isKnownImageModel(model) {
+  const normalized = String(model || '').toLowerCase();
+  return knownImageModels.has(normalized) || /^gpt-image-2-(?:2k|pro|4k)$/i.test(normalized);
+}
+
+function parseSize(size) {
+  const match = String(size || '').match(/^(\d+)x(\d+)$/);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) return undefined;
+  return { width, height, area: width * height, orientation: width === height ? 'square' : (width > height ? 'landscape' : 'portrait') };
+}
+
+function conservativeFallbackSizes(size) {
+  const parsed = parseSize(size);
+  if (!parsed) return [];
+  // Any request at or above the 2K-class boundary is an explicit high-resolution
+  // request.  Do not silently turn it into a 1K image; surface the service error
+  // so the caller can explain whether the current channel lacks 2K/4K support.
+  if (Math.max(parsed.width, parsed.height) >= 1600) return [];
+  return conservativeSizes[parsed.orientation].filter((candidate) => {
+    const candidateSize = parseSize(candidate);
+    return candidateSize && candidateSize.area < parsed.area;
+  });
+}
+
+function isHighResolutionSize(size) {
+  const parsed = parseSize(size);
+  return Boolean(parsed && Math.max(parsed.width, parsed.height) >= 1600);
+}
+
+function resolutionTier(size) {
+  const parsed = parseSize(size);
+  if (!parsed) return undefined;
+  const edge = Math.max(parsed.width, parsed.height);
+  if (edge >= 3500) return '4K';
+  if (edge >= 1600) return '2K';
+  return '1K';
+}
+
+function suggestedModelFromError(error) {
+  const details = `${error?.responseBody || ''} ${error?.message || ''}`;
+  return details.match(/\b(gpt-image-[a-z0-9-]+)\b/i)?.[1];
+}
+
+function isUnsupportedSizeError(error) {
+  const status = Number(error?.status);
+  if (![400, 422].includes(status)) return false;
+  const details = `${error?.responseBody || ''} ${error?.message || ''}`;
+  const mentionsSize = /(size|resolution|dimension|pixel|\d{3,5}\s*x\s*\d{3,5}|\b(?:1k|2k|4k)\b)/i.test(details);
+  const rejectsSize = /(unsupported|not supported|does not support|invalid|available sizes?|choose|use|不支持|改用)/i.test(details);
+  return mentionsSize && rejectsSize;
+}
+
+function isModelAvailabilityError(error) {
+  const status = Number(error?.status);
+  const details = `${error?.responseBody || ''} ${error?.message || ''}`;
+  return [400, 404, 422, 503].includes(status) && /(model[_ -]?not[_ -]?found|no available channel|unknown model|unsupported model|model.+not.+available)/i.test(details);
+}
 function mimeFromBytes(bytes, fallbackPath) {
   bytes = Buffer.from(bytes).subarray(0, 16);
   if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
@@ -121,9 +194,35 @@ function buildChatPayload(args, inputImageValue, hasInputImage) {
   return payload;
 }
 
+function buildImagesPayload(args, inputImageValue, hasInputImage, size) {
+  const requestArgs = { ...args, size };
+  const payload = hasInputImage
+    ? { model: requestArgs.model, prompt: `${editInstruction}\nUser instruction: ${requestArgs.prompt}`, n: 1 }
+    : { model: requestArgs.model, prompt: requestArgs.prompt, n: 1 };
+  for (const [arg, field] of [['size', 'size'], ['quality', 'quality'], ['background', 'background'], ['outputFormat', 'output_format'], ['responseFormat', 'response_format']]) {
+    if (requestArgs[arg]) payload[field] = requestArgs[arg];
+  }
+  if (args.dryRun && hasInputImage) {
+    if (args.inputImagePath) {
+      const input = path.resolve(args.inputImagePath);
+      payload.image = { field: 'image', filename: path.basename(input) || 'reference.png', contentType: imageMime(input), bytes: fs.statSync(input).size };
+    } else {
+      payload.image = { field: 'image', source: inputImageValue };
+    }
+  }
+  return payload;
+}
+
 function isImagesEditFallbackError(error) {
   const status = Number(error?.status);
   const details = `${error?.responseBody || ''} ${error?.message || ''}`.toLowerCase();
+  // A size-capability failure must be handled by the resolution ladder, not by
+  // changing an Images Edits request into Chat (which cannot guarantee pixels).
+  if (isUnsupportedSizeError(error)) return false;
+  // A missing or unavailable high-resolution model is a model/channel failure,
+  // not an Images Edits capability failure.  Retrying Chat with the same model
+  // would hide the original service error and still cannot guarantee pixels.
+  if (isModelAvailabilityError(error)) return false;
   if ([404, 405, 415, 501].includes(status)) return true;
   if (![400, 422].includes(status)) return false;
   return /(unsupported|not supported|not implemented|endpoint|image\s*edit|images\/edits|multipart|image is required|input_image|method not allowed)/i.test(details);
@@ -148,10 +247,16 @@ async function main() {
   const timeoutSec = common.timeout(args.timeoutSec, 300);
 
   const hasInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
-  const mode = args.endpointMode || (knownImageModels.has(args.model.toLowerCase()) ? 'images' : 'chat');
+  const mode = args.endpointMode || (isKnownImageModel(args.model) ? 'images' : 'chat');
   if (!['chat', 'images'].includes(mode)) fail('--endpoint-mode must be chat or images.');
   if (mode === 'chat' && args.size) fail('Chat mode uses --aspect-ratio; --size is only for images mode.');
   if (mode === 'images' && args.aspectRatio) fail('Images mode uses --size; --aspect-ratio is only for chat mode.');
+  const requestedModel = args.model;
+  const requestedSize = args.size;
+  // Preserve the user-selected model ID, including for high-resolution
+  // requests.  The service/channel decides whether that model accepts the
+  // requested size; a rejection is surfaced rather than silently switching IDs.
+  const effectiveArgs = { ...args, model: requestedModel };
 
   let route = args.useCodexRoute ? 'codex' : (args.route || 'auto');
   if (args.endpoint) route = 'custom';
@@ -164,7 +269,6 @@ async function main() {
   const resolvedEndpoint = args.endpoint || common.endpoint(base, mode === 'chat' ? 'chat/completions' : (hasInputImage ? 'images/edits' : 'images/generations'));
   if (args.useCcswitchCredential && (route === 'codex' || !common.isKeylink(resolvedEndpoint))) fail('The CCSwitch credential can only be sent directly to keylinkclub.com.');
 
-  let payload;
   let inputImageValue;
   if (args.inputImageUrl) {
     let inputUrl;
@@ -183,36 +287,22 @@ async function main() {
     inputImageValue = `data:${mime};base64,${value}`;
   }
 
-  if (mode === 'chat') {
-    payload = buildChatPayload(args, inputImageValue, hasInputImage);
-  } else if (hasInputImage) {
-    payload = { model: args.model, prompt: `${editInstruction}\nUser instruction: ${args.prompt}`, n: 1 };
-    for (const [arg, field] of [['size', 'size'], ['quality', 'quality'], ['background', 'background'], ['outputFormat', 'output_format'], ['responseFormat', 'response_format']]) if (args[arg]) payload[field] = args[arg];
-    if (args.dryRun) {
-      if (args.inputImagePath) {
-        const input = path.resolve(args.inputImagePath);
-        payload.image = { field: 'image', filename: path.basename(input) || 'reference.png', contentType: imageMime(input), bytes: fs.statSync(input).size };
-      } else {
-        payload.image = { field: 'image', source: inputImageValue };
-      }
-    }
-  } else {
-    payload = { model: args.model, prompt: args.prompt, n: 1 };
-    for (const [arg, field] of [['size', 'size'], ['quality', 'quality'], ['background', 'background'], ['outputFormat', 'output_format'], ['responseFormat', 'response_format']]) if (args[arg]) payload[field] = args[arg];
-  }
-  if (args.dryRun) return console.log(JSON.stringify({ Operation: hasInputImage ? 'edit' : 'generate', EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint, RequestFormat: mode === 'images' && hasInputImage ? 'multipart/form-data' : 'application/json', Payload: payload }, null, 2));
+  let activeSize = args.size;
+  const payload = mode === 'chat'
+    ? buildChatPayload(effectiveArgs, inputImageValue, hasInputImage)
+    : buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, activeSize);
+  if (args.dryRun) return console.log(JSON.stringify({
+    Operation: hasInputImage ? 'edit' : 'generate', EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint,
+    RequestFormat: mode === 'images' && hasInputImage ? 'multipart/form-data' : 'application/json',
+    RequestedModel: requestedModel, Model: effectiveArgs.model, RequestedSize: requestedSize,
+    Size: activeSize, ResolutionTier: resolutionTier(activeSize), Payload: payload,
+  }, null, 2));
 
   const noAuth = args.noAuth || (route === 'codex' && common.isLoopback(resolvedEndpoint) && !args.apiKey && !args.apiKeyFile);
   const key = noAuth ? undefined : common.resolveKey(args);
-  const headers = {};
-  if (key) headers.authorization = `Bearer ${key}`;
-  let body;
+  let reference;
   if (mode === 'images' && hasInputImage) {
-    const reference = await buildReferenceImage(args, inputImageValue, timeoutSec);
-    body = buildImagesEditForm(reference, args, payload.prompt);
-  } else {
-    headers['content-type'] = 'application/json; charset=utf-8';
-    body = JSON.stringify(payload);
+    reference = await buildReferenceImage(args, inputImageValue, timeoutSec);
   }
   const canAutoChatFallback = mode === 'images' && hasInputImage && args.endpointMode === undefined && !args.endpoint;
   let activeMode = mode;
@@ -220,16 +310,74 @@ async function main() {
   let activePayload = payload;
   let fallbackFromEndpoint;
   let fallbackReason;
+  let sizeFallbackFrom;
+  let sizeFallbackReason;
+  let suggestedModel;
   let response;
-  try {
-    response = await common.fetchJson(activeEndpoint, { method: 'POST', headers, body }, timeoutSec, key, 'Keylink request failed');
-  } catch (imagesError) {
-    if (!canAutoChatFallback || !isImagesEditFallbackError(imagesError)) throw imagesError;
+
+  const sendImages = async (size) => {
+    const requestArgs = { ...effectiveArgs, size };
+    const requestPayload = buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, size);
+    const requestHeaders = {};
+    if (key) requestHeaders.authorization = `Bearer ${key}`;
+    if (hasInputImage) {
+      return common.fetchJson(activeEndpoint, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: buildImagesEditForm(reference, requestArgs, requestPayload.prompt),
+      }, timeoutSec, key, 'Keylink request failed');
+    }
+    requestHeaders['content-type'] = 'application/json; charset=utf-8';
+    return common.fetchJson(activeEndpoint, {
+      method: 'POST', headers: requestHeaders, body: JSON.stringify(requestPayload),
+    }, timeoutSec, key, 'Keylink request failed');
+  };
+
+  let imagesError;
+  if (mode === 'images') {
+    const sizeCandidates = conservativeFallbackSizes(activeSize);
+    while (true) {
+      activePayload = buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, activeSize);
+      try {
+        response = await sendImages(activeSize);
+        break;
+      } catch (error) {
+        suggestedModel ||= suggestedModelFromError(error);
+        if (isUnsupportedSizeError(error) && sizeCandidates.length) {
+          const nextSize = sizeCandidates.shift();
+          sizeFallbackFrom ||= activeSize;
+          sizeFallbackReason ||= `The service rejected ${activeSize}; retried at ${nextSize}.`;
+          activeSize = nextSize;
+          continue;
+        }
+        imagesError = error;
+        break;
+      }
+    }
+  } else {
+    const chatHeaders = {};
+    if (key) chatHeaders.authorization = `Bearer ${key}`;
+    chatHeaders['content-type'] = 'application/json; charset=utf-8';
+    response = await common.fetchJson(activeEndpoint, {
+      method: 'POST', headers: chatHeaders, body: JSON.stringify(activePayload),
+    }, timeoutSec, key, 'Keylink request failed');
+  }
+
+  if (!response) {
+    if (!canAutoChatFallback || !isImagesEditFallbackError(imagesError)) {
+      const highResolutionFailure = isHighResolutionSize(activeSize);
+      const highResolutionMessage = highResolutionFailure
+        ? `High-resolution ${resolutionTier(activeSize)} request (${activeSize}) failed on model ${effectiveArgs.model}${isModelAvailabilityError(imagesError) ? ' because this selected model/channel is unavailable' : ''}; no lower-resolution fallback was attempted because the request asked for higher resolution.`
+        : undefined;
+      if (suggestedModel) fail(`${highResolutionMessage ? `${highResolutionMessage} ` : ''}${imagesError.message}; service suggested model ${suggestedModel}, but it was not auto-selected because availability is not advertised.`);
+      if (highResolutionMessage) fail(`${highResolutionMessage} ${imagesError.message}`);
+      throw imagesError;
+    }
     fallbackFromEndpoint = activeEndpoint;
     fallbackReason = `Images Edits returned HTTP ${imagesError.status}`;
     activeMode = 'chat';
     activeEndpoint = common.endpoint(base, 'chat/completions');
-    activePayload = buildChatPayload(args, inputImageValue, hasInputImage);
+    activePayload = buildChatPayload({ ...effectiveArgs, size: activeSize }, inputImageValue, hasInputImage);
     const fallbackHeaders = {};
     if (key) fallbackHeaders.authorization = `Bearer ${key}`;
     fallbackHeaders['content-type'] = 'application/json; charset=utf-8';
@@ -262,8 +410,11 @@ async function main() {
   if (!bytes) fail(`The saved image is empty: ${output}`);
   console.log(JSON.stringify({
     OutputPath: output, NextEditInputPath: output, Bytes: bytes, Operation: hasInputImage ? 'edit' : 'generate',
-    Model: args.model, EndpointMode: activeMode, Route: route, Endpoint: activeEndpoint,
+    RequestedModel: requestedModel, Model: effectiveArgs.model, EndpointMode: activeMode, Route: route, Endpoint: activeEndpoint,
     FallbackFromEndpoint: fallbackFromEndpoint, FallbackReason: fallbackReason,
+    RequestedSize: requestedSize, Size: activeSize, SizeFallbackFrom: sizeFallbackFrom,
+    SizeFallbackReason: sizeFallbackReason, SuggestedModel: suggestedModel,
+    ResolutionTier: resolutionTier(activeSize),
   }, null, 2));
 }
 

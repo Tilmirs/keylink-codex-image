@@ -221,6 +221,10 @@ function Get-ImageModelEvidence {
 
     $knownModels = @(
         'gpt-image-2',
+        'gpt-image-2-openai',
+        'gpt-image-2-2k',
+        'gpt-image-2-pro',
+        'gpt-image-2-4k',
         'gemini-3-pro-image',
         'gemini-2.5-flash-image',
         'gemini-3.1-flash-image'
@@ -388,8 +392,11 @@ foreach ($rawModel in @($rawModels)) {
         AdvertisedAspectRatios = @($resolution.AdvertisedAspectRatios)
         AdvertisedResolutionTiers = $resolution.AdvertisedResolutionTiers
         ResolutionSource = if (@($resolution.AdvertisedSizes).Count -gt 0 -or @($resolution.AdvertisedAspectRatios).Count -gt 0) { 'api-metadata' } else { 'not-advertised' }
-        SuggestedSizes = if (@($resolution.AdvertisedSizes).Count -eq 0) { @('2048x2048', '2048x1152', '1152x2048', '1024x1024', '1536x1024', '1024x1536') } else { @() }
+        # Unverified, conservative candidates only.  Do not assume 2048x2048
+        # when the service publishes no metadata; GPT Plus may reject it.
+        SuggestedSizes = if (@($resolution.AdvertisedSizes).Count -eq 0) { @('1024x1024', '1536x1024', '1024x1536') } else { @() }
         SuggestedAspectRatios = if (@($resolution.AdvertisedAspectRatios).Count -eq 0) { @('1:1', '16:9', '9:16', '4:3', '3:4') } else { @() }
+        HighResolutionModelHint = if ($modelId -match '(?i)(^|[-_.])pro([-_.]|$)|gpt-image-2-openai') { $modelId } else { $null }
     }
 }
 

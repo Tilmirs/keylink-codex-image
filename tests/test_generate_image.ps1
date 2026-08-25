@@ -27,6 +27,9 @@ $chatOutput = Join-Path $tempRoot 'chat.png'
 $imagesOutput = Join-Path $tempRoot 'images.png'
 $editOutput = Join-Path $tempRoot 'edited.png'
 $fallbackOutput = Join-Path $tempRoot 'fallback-chat.png'
+$highResolutionOutput = Join-Path $tempRoot 'high-resolution.png'
+$fourKOutput = Join-Path $tempRoot 'four-k.png'
+$fourKEditOutput = Join-Path $tempRoot 'four-k-edit.png'
 $editInput = Join-Path $tempRoot 'uploaded image.png'
 $ccswitchDatabase = Join-Path $tempRoot 'cc-switch.db'
 $serverJob = $null
@@ -60,7 +63,7 @@ try {
         }
 
         try {
-            for ($index = 0; $index -lt 5; $index++) {
+            for ($index = 0; $index -lt 9; $index++) {
                 $client = $listener.AcceptTcpClient()
                 try {
                     $stream = $client.GetStream()
@@ -96,6 +99,14 @@ try {
                     if ($path -eq '/v1/images/edits' -and $body -match 'Trigger Images Edits fallback') {
                         $statusCode = 404
                         $responseBody = '{"error":{"message":"Images Edits endpoint is not supported"}}'
+                    }
+                    elseif ($path -eq '/v1/images/generations' -and $body -match '"size"\s*:\s*"2560x1440"' -and $body -notmatch '"model"\s*:\s*"gpt-image-2"') {
+                        $statusCode = 400
+                        $responseBody = '{"error":{"message":"high-resolution request must preserve gpt-image-2 model ID"}}'
+                    }
+                    elseif ($path -eq '/v1/images/generations' -and $body -match 'Trigger high-resolution failure') {
+                        $statusCode = 400
+                        $responseBody = '{"error":{"message":"model gpt-image-2 does not support 2560x1440; high-resolution unavailable"}}'
                     }
                     elseif ($path -eq '/v1/chat/completions') {
                         $responseBody = '{"choices":[{"message":{"content":"![image](data:image/png;base64,' + $pngBase64 + ')"}}]}'
@@ -302,6 +313,49 @@ base_url = "http://127.0.0.1:9/v1"
         -Size '1024x1024' `
         -OutputPath $fallbackOutput | ConvertFrom-Json
 
+    $highResolutionResult = & $Generator `
+        -Prompt 'high-resolution test' `
+        -Model 'gpt-image-2' `
+        -Route auto `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -ApiKey 'ccswitch-test-key' `
+        -Size '2560x1440' `
+        -OutputPath $highResolutionOutput | ConvertFrom-Json
+
+    $fourKResult = & $Generator `
+        -Prompt '4K high-resolution test' `
+        -Model 'gpt-image-2' `
+        -Route auto `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -ApiKey 'ccswitch-test-key' `
+        -Size '3840x2160' `
+        -OutputPath $fourKOutput | ConvertFrom-Json
+
+    $fourKEditResult = & $Generator `
+        -Prompt 'Edit this reference at 4K while preserving the composition.' `
+        -Model 'gpt-image-2' `
+        -InputImagePath $editInput `
+        -Route auto `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -ApiKey 'ccswitch-test-key' `
+        -Size '3840x2160' `
+        -OutputPath $fourKEditOutput | ConvertFrom-Json
+
+    $highResolutionFailure = $false
+    try {
+        & $Generator `
+            -Prompt 'Trigger high-resolution failure' `
+            -Model 'gpt-image-2' `
+            -Route auto `
+            -BaseUrl "http://127.0.0.1:$port/v1" `
+            -ApiKey 'ccswitch-test-key' `
+            -Size '2560x1440' `
+            -OutputPath (Join-Path $tempRoot 'high-resolution-failure.png') | Out-Null
+    }
+    catch {
+        $highResolutionFailure = $_.Exception.Message -match 'High-resolution 2K request.*no lower-resolution fallback was attempted'
+    }
+
     Wait-Job -Job $serverJob -Timeout 10 | Out-Null
     $requests = @(Receive-Job -Job $serverJob)
 
@@ -312,6 +366,16 @@ base_url = "http://127.0.0.1:9/v1"
     Assert-True ($fallbackResult.Endpoint -eq "http://127.0.0.1:$port/v1/chat/completions") 'Images Edits fallback endpoint'
     Assert-True ($fallbackResult.FallbackFromEndpoint -eq "http://127.0.0.1:$port/v1/images/edits") 'Images Edits fallback source endpoint'
     Assert-True ($fallbackResult.FallbackReason -match 'HTTP 404') 'Images Edits fallback reason'
+    Assert-True ($highResolutionResult.RequestedModel -eq 'gpt-image-2') 'high-resolution preserves requested model'
+    Assert-True ($highResolutionResult.Model -eq 'gpt-image-2') 'high-resolution preserves model ID'
+    Assert-True ($highResolutionResult.Size -eq '2560x1440') 'high-resolution keeps requested size'
+    Assert-True ($fourKResult.Model -eq 'gpt-image-2') '4K preserves model ID'
+    Assert-True ($fourKResult.Size -eq '3840x2160') '4K keeps requested size'
+    Assert-True ($fourKResult.ResolutionTier -eq '4K') '4K resolution tier'
+    Assert-True ($fourKEditResult.Operation -eq 'edit') '4K edit operation'
+    Assert-True ($fourKEditResult.Model -eq 'gpt-image-2') '4K edit preserves model ID'
+    Assert-True ($fourKEditResult.Size -eq '3840x2160') '4K edit keeps requested size'
+    Assert-True $highResolutionFailure 'high-resolution failure explains that no lower fallback was attempted'
     Assert-True ($chatResult.NextEditInputPath -eq $chatOutput) 'chat result exposes next edit input path'
     Assert-True ($imagesResult.NextEditInputPath -eq $imagesOutput) 'images result exposes next edit input path'
     Assert-True ($editResult.NextEditInputPath -eq $editOutput) 'edit result exposes next edit input path'
@@ -321,12 +385,16 @@ base_url = "http://127.0.0.1:9/v1"
     Assert-True ((Get-Item -LiteralPath $imagesOutput).Length -gt 8) 'images response was written'
     Assert-True ((Get-Item -LiteralPath $editOutput).Length -gt 8) 'edited response was written'
     Assert-True ((Get-Item -LiteralPath $fallbackOutput).Length -gt 8) 'fallback response was written'
-    Assert-True ($requests.Count -eq 5) 'mock server received five requests'
+    Assert-True ($requests.Count -eq 9) 'mock server received nine requests'
     Assert-True ($requests[0].Path -eq '/v1/chat/completions') 'chat request path'
     Assert-True ($requests[1].Path -eq '/v1/images/generations') 'images request path'
     Assert-True ($requests[2].Path -eq '/v1/images/edits') 'images edit request path'
     Assert-True ($requests[3].Path -eq '/v1/images/edits') 'fallback first request path'
     Assert-True ($requests[4].Path -eq '/v1/chat/completions') 'fallback chat request path'
+    Assert-True ($requests[5].Path -eq '/v1/images/generations') 'high-resolution request path'
+    Assert-True ($requests[6].Path -eq '/v1/images/generations') '4K request path'
+    Assert-True ($requests[7].Path -eq '/v1/images/edits') '4K edit request path'
+    Assert-True ($requests[8].Path -eq '/v1/images/generations') 'high-resolution failure request path'
     Assert-True ($null -eq $requests[0].Authorization) 'chat request omits authorization in no-auth mode'
     Assert-True ($requests[1].Authorization -eq 'Bearer ccswitch-test-key') 'current CCSwitch provider authorization header'
 
@@ -341,6 +409,15 @@ base_url = "http://127.0.0.1:9/v1"
     $fallbackChatBody = $requests[4].Body | ConvertFrom-Json
     Assert-True ($fallbackChatBody.extra_body.imageConfig.aspectRatio -eq '1:1') 'fallback derives chat aspect ratio from size'
     Assert-True ($fallbackChatBody.messages[0].content -match 'Preserve all content') 'fallback chat preserves unspecified content'
+    $highResolutionBody = $requests[5].Body | ConvertFrom-Json
+    Assert-True ($highResolutionBody.model -eq 'gpt-image-2') 'high-resolution request model payload'
+    Assert-True ($highResolutionBody.size -eq '2560x1440') 'high-resolution size payload'
+    $fourKBody = $requests[6].Body | ConvertFrom-Json
+    Assert-True ($fourKBody.model -eq 'gpt-image-2') '4K request model payload'
+    Assert-True ($fourKBody.size -eq '3840x2160') '4K size payload'
+    Assert-True ($requests[7].Body -match '(?i)gpt-image-2') '4K edit model payload'
+    Assert-True ($requests[7].Body -match '(?i)3840x2160') '4K edit size payload'
+    Assert-True ($requests[7].Body -match '(?i)(image|filename)') '4K edit includes image field'
 
     'All Keylink image helper tests passed.'
 }

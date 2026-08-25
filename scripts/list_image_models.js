@@ -2,7 +2,11 @@
 'use strict';
 
 const common = require('./keylink_common');
-const known = new Set(['gpt-image-2', 'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-3.1-flash-image']);
+const known = new Set([
+  'gpt-image-2', 'gpt-image-2-openai', 'gpt-image-2-2k', 'gpt-image-2-pro', 'gpt-image-2-4k',
+  'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-3.1-flash-image',
+]);
+const conservativeSuggestedSizes = ['1024x1024', '1536x1024', '1024x1536'];
 
 function evidence(id, json) {
   if (known.has(id.toLowerCase())) return 'known-model-id';
@@ -72,8 +76,12 @@ async function main() {
       AdvertisedSizes: resolution.sizes, AdvertisedAspectRatios: resolution.ratios,
       AdvertisedResolutionTiers: tiers,
       ResolutionSource: resolution.sizes.length || resolution.ratios.length ? 'api-metadata' : 'not-advertised',
-      SuggestedSizes: resolution.sizes.length ? [] : ['2048x2048', '2048x1152', '1152x2048', '1024x1024', '1536x1024', '1024x1536'],
+      // These are deliberately conservative, unverified candidates.  A model
+      // with no advertised metadata must never be presented with 2048x2048 as
+      // an assumed default; GPT Plus currently rejects that rectangle.
+      SuggestedSizes: resolution.sizes.length ? [] : conservativeSuggestedSizes,
       SuggestedAspectRatios: resolution.ratios.length ? [] : ['1:1', '16:9', '9:16', '4:3', '3:4'],
+      HighResolutionModelHint: /(^|[-_.])pro([-_.]|$)|gpt-image-2-openai/i.test(id) ? id : undefined,
     });
   }
   models.sort((a, b) => a.Id.localeCompare(b.Id));

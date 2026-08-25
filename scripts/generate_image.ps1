@@ -504,12 +504,82 @@ function New-ChatPayload {
     return $payload
 }
 
+function Get-SizeFallbackCandidates {
+    param([string]$Size)
+
+    if ($Size -notmatch '^(?<width>\d+)x(?<height>\d+)$') { return @() }
+    $width = [int64]$Matches['width']
+    $height = [int64]$Matches['height']
+    # 2K and 4K are explicit high-resolution requests.  Surface an error rather
+    # than silently returning a 1K image when the selected high-quality channel
+    # cannot serve them.
+    if ([Math]::Max($width, $height) -ge 1600) { return @() }
+    $area = $width * $height
+    $candidates = if ($width -eq $height) {
+        @('1024x1024')
+    }
+    elseif ($width -gt $height) {
+        @('1536x1024', '1024x1024')
+    }
+    else {
+        @('1024x1536', '1024x1024')
+    }
+    return @($candidates | Where-Object {
+        $_ -match '^(?<candidateWidth>\d+)x(?<candidateHeight>\d+)$' -and
+        ([int64]$Matches['candidateWidth'] * [int64]$Matches['candidateHeight']) -lt $area
+    })
+}
+
+function Test-HighResolutionSize {
+    param([string]$Size)
+    if ($Size -notmatch '^(?<width>\d+)x(?<height>\d+)$') { return $false }
+    return [Math]::Max([int64]$Matches['width'], [int64]$Matches['height']) -ge 1600
+}
+
+function Get-ResolutionTier {
+    param([string]$Size)
+    if ($Size -notmatch '^(?<width>\d+)x(?<height>\d+)$') { return $null }
+    $edge = [Math]::Max([int64]$Matches['width'], [int64]$Matches['height'])
+    if ($edge -ge 3500) { return '4K' }
+    if ($edge -ge 1600) { return '2K' }
+    return '1K'
+}
+
+function Test-UnsupportedSizeError {
+    param(
+        [Nullable[int]]$StatusCode,
+        [string]$Details
+    )
+
+    if ($StatusCode -notin @(400, 422)) { return $false }
+    $mentionsSize = $Details -match '(?i)(size|resolution|dimension|pixel|\d{3,5}\s*x\s*\d{3,5}|\b(?:1k|2k|4k)\b)'
+    $rejectsSize = $Details -match '(?i)(unsupported|not supported|does not support|invalid|available sizes?|choose|use|不支持|改用)'
+    return $mentionsSize -and $rejectsSize
+}
+
+function Test-ModelAvailabilityError {
+    param([string]$Details)
+    return $Details -match '(?i)(model[_ -]?not[_ -]?found|no available channel|unknown model|unsupported model|model.+not.+available)'
+}
+
+function Get-SuggestedModel {
+    param([string]$Details)
+    $match = [regex]::Match($Details, '(?i)\b(gpt-image-[a-z0-9-]+)\b')
+    if ($match.Success) { return $match.Groups[1].Value }
+    return $null
+}
+
 function Test-ImagesEditFallbackError {
     param(
         [Nullable[int]]$StatusCode,
         [string]$Details
     )
 
+    if (Test-UnsupportedSizeError -StatusCode $StatusCode -Details $Details) { return $false }
+    # A missing/unavailable high-resolution model is not an Images Edits
+    # capability failure.  Retrying Chat would hide the original service error
+    # and cannot guarantee the requested pixels.
+    if (Test-ModelAvailabilityError -Details $Details) { return $false }
     if ($StatusCode -in @(404, 405, 415, 501)) { return $true }
     if ($StatusCode -notin @(400, 422)) { return $false }
     return $Details -match '(?i)(unsupported|not supported|not implemented|endpoint|image\s*edit|images/edits|multipart|image is required|input_image|method not allowed)'
@@ -556,6 +626,10 @@ if ($NoAuth -and ($ApiKey -or $ApiKeyFile -or $UseCCSwitchCredential)) {
 $endpointModeWasExplicit = $PSBoundParameters.ContainsKey('EndpointMode')
 $knownImageModels = @(
     'gpt-image-2',
+    'gpt-image-2-openai',
+    'gpt-image-2-2k',
+    'gpt-image-2-pro',
+    'gpt-image-2-4k',
     'gemini-3-pro-image',
     'gemini-2.5-flash-image',
     'gemini-3.1-flash-image'
@@ -564,6 +638,12 @@ $isKnownImageModel = @($knownImageModels | Where-Object { $_ -ieq $Model }).Coun
 if (-not $endpointModeWasExplicit -and $isKnownImageModel) {
     $EndpointMode = 'images'
 }
+
+$requestedModel = $Model
+$requestedSize = $Size
+# Preserve the user-selected model ID for every size.  The service/channel
+# decides whether that model supports high resolution; surface a rejection
+# instead of silently switching to another model.
 
 if ($EndpointMode -eq 'chat' -and $Size) {
     throw 'The chat endpoint uses -AspectRatio when supported; -Size is only sent in images mode.'
@@ -683,6 +763,11 @@ if ($DryRun) {
         Route = $effectiveRoute
         Endpoint = $resolvedEndpoint
         RequestFormat = if ($EndpointMode -eq 'images' -and ($InputImageUrl -or $InputImagePath)) { 'multipart/form-data' } else { 'application/json' }
+        RequestedModel = $requestedModel
+        Model = $Model
+        RequestedSize = $requestedSize
+        Size = $Size
+        ResolutionTier = Get-ResolutionTier $Size
         Payload = $payload
     } | ConvertTo-Json -Depth 20
     return
@@ -706,6 +791,13 @@ if ($apiKey) {
 }
 $hasInputImage = [bool]($InputImageUrl -or $InputImagePath)
 $canAutoChatFallback = $EndpointMode -eq 'images' -and $hasInputImage -and -not $endpointModeWasExplicit -and -not $Endpoint
+$requestedSize = $Size
+$activeSize = $Size
+$sizeFallbackFrom = $null
+$sizeFallbackReason = $null
+$suggestedModel = $null
+$sizeCandidates = @(Get-SizeFallbackCandidates $Size)
+$sizeCandidateIndex = 0
 $activeMode = $EndpointMode
 $activeEndpoint = $resolvedEndpoint
 $activePayload = $payload
@@ -714,44 +806,93 @@ $fallbackReason = $null
 $requestStatus = $null
 $requestErrorText = $null
 $response = $null
+$reference = $null
 
 try {
     if ($EndpointMode -eq 'images' -and $hasInputImage) {
         Add-Type -AssemblyName System.Net.Http
         $reference = Get-ReferenceImageBytes -Url $InputImageUrl -Path $InputImagePath -TimeoutSeconds $TimeoutSec
-        $client = [Net.Http.HttpClient]::new()
-        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
-        $multipart = [Net.Http.MultipartFormDataContent]::new()
-        $fields = [ordered]@{ model = $Model; prompt = $payload.prompt; n = '1' }
-        if ($Size) { $fields['size'] = $Size }
-        if ($Quality) { $fields['quality'] = $Quality }
-        if ($Background) { $fields['background'] = $Background }
-        if ($OutputFormat) { $fields['output_format'] = $OutputFormat }
-        if ($ResponseFormat) { $fields['response_format'] = $ResponseFormat }
-        foreach ($entry in $fields.GetEnumerator()) {
-            $multipart.Add([Net.Http.StringContent]::new([string]$entry.Value), [string]$entry.Key)
-        }
-        $fileContent = [Net.Http.ByteArrayContent]::new($reference.Bytes)
-        $fileContent.Headers.ContentType = [Net.Http.Headers.MediaTypeHeaderValue]::Parse($reference.MimeType)
-        $multipart.Add($fileContent, 'image', $reference.FileName)
-        $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post, $resolvedEndpoint)
-        $request.Content = $multipart
-        if ($apiKey) {
-            $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $apiKey)
-        }
-        try {
-            $httpResponse = $client.SendAsync($request).GetAwaiter().GetResult()
-            $responseText = $httpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-            if (-not $httpResponse.IsSuccessStatusCode) {
-                $requestStatus = [int]$httpResponse.StatusCode
-                $requestErrorText = $responseText
-                throw "HTTP $requestStatus`: $responseText"
+    }
+
+    if ($EndpointMode -eq 'images') {
+        while ($true) {
+            $requestStatus = $null
+            $requestErrorText = $null
+            if ($activeSize) { $payload['size'] = $activeSize } else { [void]$payload.Remove('size') }
+            $activePayload = $payload
+            try {
+                if ($hasInputImage) {
+                    $client = [Net.Http.HttpClient]::new()
+                    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+                    $multipart = [Net.Http.MultipartFormDataContent]::new()
+                    $fields = [ordered]@{ model = $Model; prompt = $payload.prompt; n = '1' }
+                    if ($activeSize) { $fields['size'] = $activeSize }
+                    if ($Quality) { $fields['quality'] = $Quality }
+                    if ($Background) { $fields['background'] = $Background }
+                    if ($OutputFormat) { $fields['output_format'] = $OutputFormat }
+                    if ($ResponseFormat) { $fields['response_format'] = $ResponseFormat }
+                    foreach ($entry in $fields.GetEnumerator()) {
+                        $multipart.Add([Net.Http.StringContent]::new([string]$entry.Value), [string]$entry.Key)
+                    }
+                    $fileContent = [Net.Http.ByteArrayContent]::new($reference.Bytes)
+                    $fileContent.Headers.ContentType = [Net.Http.Headers.MediaTypeHeaderValue]::Parse($reference.MimeType)
+                    $multipart.Add($fileContent, 'image', $reference.FileName)
+                    $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post, $resolvedEndpoint)
+                    $request.Content = $multipart
+                    if ($apiKey) {
+                        $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $apiKey)
+                    }
+                    try {
+                        $httpResponse = $client.SendAsync($request).GetAwaiter().GetResult()
+                        $responseText = $httpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                        if (-not $httpResponse.IsSuccessStatusCode) {
+                            $requestStatus = [int]$httpResponse.StatusCode
+                            $requestErrorText = $responseText
+                            throw "HTTP $requestStatus`: $responseText"
+                        }
+                        $response = $responseText | ConvertFrom-Json
+                    }
+                    finally {
+                        $request.Dispose()
+                        $client.Dispose()
+                    }
+                }
+                else {
+                    $requestJson = $payload | ConvertTo-Json -Depth 20 -Compress
+                    $response = Invoke-RestMethod `
+                        -Uri $resolvedEndpoint `
+                        -Method Post `
+                        -Headers $headers `
+                        -ContentType 'application/json; charset=utf-8' `
+                        -Body ([Text.Encoding]::UTF8.GetBytes($requestJson)) `
+                        -TimeoutSec $TimeoutSec
+                }
+                break
             }
-            $response = $responseText | ConvertFrom-Json
-        }
-        finally {
-            $request.Dispose()
-            $client.Dispose()
+            catch {
+                $innerErrorDetails = Get-ObjectProperty $_ 'ErrorDetails'
+                $innerException = Get-ObjectProperty $_ 'Exception'
+                $innerDetails = Get-FirstNonEmptyValue @(
+                    (Get-ObjectProperty $innerErrorDetails 'Message'),
+                    (Get-ObjectProperty $innerException 'Message'),
+                    [string]$_
+                )
+                if (-not $requestErrorText) { $requestErrorText = $innerDetails }
+                if (-not $requestStatus) {
+                    $statusMatch = [regex]::Match($innerDetails, '(?i)(?:HTTP\s+|status(?: code)?[^0-9]{0,12})(?<status>\d{3})')
+                    if ($statusMatch.Success) { $requestStatus = [int]$statusMatch.Groups['status'].Value }
+                }
+                $suggestedModel = Get-FirstNonEmptyValue @($suggestedModel, (Get-SuggestedModel $innerDetails))
+                if ((Test-UnsupportedSizeError -StatusCode $requestStatus -Details $requestErrorText) -and $sizeCandidateIndex -lt $sizeCandidates.Count) {
+                    $nextSize = $sizeCandidates[$sizeCandidateIndex]
+                    $sizeCandidateIndex++
+                    if (-not $sizeFallbackFrom) { $sizeFallbackFrom = $activeSize }
+                    if (-not $sizeFallbackReason) { $sizeFallbackReason = "The service rejected $activeSize; retried at $nextSize." }
+                    $activeSize = $nextSize
+                    continue
+                }
+                throw
+            }
         }
     }
     else {
@@ -774,12 +915,13 @@ catch {
         [string]$_
     )
     if (-not $requestErrorText) { $requestErrorText = $details }
+    $suggestedModel = Get-FirstNonEmptyValue @($suggestedModel, (Get-SuggestedModel $details))
     if ($canAutoChatFallback -and (Test-ImagesEditFallbackError -StatusCode $requestStatus -Details $requestErrorText)) {
         $fallbackFromEndpoint = $activeEndpoint
         $fallbackReason = "Images Edits returned HTTP $requestStatus"
         $activeMode = 'chat'
         $activeEndpoint = Resolve-KeylinkEndpoint $null $resolvedBaseUrl 'chat'
-        $activePayload = New-ChatPayload -Prompt $Prompt -Model $Model -InputImageUrl $InputImageUrl -InputImagePath $InputImagePath -AspectRatio $AspectRatio -Size $Size
+        $activePayload = New-ChatPayload -Prompt $Prompt -Model $Model -InputImageUrl $InputImageUrl -InputImagePath $InputImagePath -AspectRatio $AspectRatio -Size $activeSize
         $fallbackHeaders = @{}
         if ($apiKey) { $fallbackHeaders.Authorization = "Bearer $apiKey" }
         try {
@@ -807,6 +949,16 @@ catch {
     }
     else {
         if ($apiKey) { $details = $details.Replace($apiKey, '<redacted>') }
+        if ($suggestedModel) { $details = "$details; service suggested model $suggestedModel, but it was not auto-selected because availability is not advertised" }
+        if (Test-HighResolutionSize $activeSize) {
+            $highResolutionReason = if (Test-ModelAvailabilityError -Details $details) {
+                'the selected model or channel is unavailable'
+            }
+            else {
+                'the current channel rejected the requested high-resolution size'
+            }
+            throw "Keylink request failed: High-resolution $(Get-ResolutionTier $activeSize) request ($activeSize) failed because $highResolutionReason; no lower-resolution fallback was attempted. $details"
+        }
         throw "Keylink request failed: $details"
     }
 }
@@ -853,10 +1005,17 @@ if ($savedFile.Length -eq 0) {
     NextEditInputPath = $savedFile.FullName
     Bytes = $savedFile.Length
     Operation = if ($InputImageUrl -or $InputImagePath) { 'edit' } else { 'generate' }
+    RequestedModel = $requestedModel
     Model = $Model
     EndpointMode = $activeMode
     Route = $effectiveRoute
     Endpoint = $activeEndpoint
     FallbackFromEndpoint = $fallbackFromEndpoint
     FallbackReason = $fallbackReason
+    RequestedSize = $requestedSize
+    Size = $activeSize
+    ResolutionTier = Get-ResolutionTier $activeSize
+    SizeFallbackFrom = $sizeFallbackFrom
+    SizeFallbackReason = $sizeFallbackReason
+    SuggestedModel = $suggestedModel
 } | ConvertTo-Json -Depth 5

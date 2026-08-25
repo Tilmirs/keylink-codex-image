@@ -1,11 +1,15 @@
 [CmdletBinding()]
 param(
-    [string]$SourcePath = $PSScriptRoot,
+    [string]$SourcePath,
     [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+    $SourcePath = $PSScriptRoot
+}
 
 function Get-FirstEnvironmentValue {
     param([Parameter(Mandatory)][string]$Name)

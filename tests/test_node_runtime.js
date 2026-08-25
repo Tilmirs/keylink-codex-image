@@ -74,10 +74,21 @@ const server = http.createServer((request, response) => {
           response.statusCode = 404;
           return response.end(JSON.stringify({ error: { message: 'Images Edits endpoint is not supported' } }));
         }
+        if (form.fields.prompt.includes('Trigger high-resolution model unavailable')) {
+          response.statusCode = 404;
+          return response.end(JSON.stringify({ error: { message: 'model gpt-image-2 is not available on this channel' } }));
+        }
       } else {
         const payload = JSON.parse(body.toString('utf8'));
         assert.equal(payload.model, 'gpt-image-2');
         requests.push({ path: request.url, payload });
+        if (payload.size && Math.max(...payload.size.split('x').map(Number)) >= 1600) {
+          assert.equal(payload.model, 'gpt-image-2', 'high-resolution preserves the requested model ID');
+        }
+        if (payload.prompt.includes('Trigger high-resolution failure')) {
+          response.statusCode = 400;
+          return response.end(JSON.stringify({ error: { message: `model ${payload.model} does not support ${payload.size}; high-resolution unavailable` } }));
+        }
       }
       response.end(JSON.stringify({ data: [{ b64_json: tinyPng }] }));
     });
@@ -109,6 +120,7 @@ const server = http.createServer((request, response) => {
     assert.equal(models.FilteredModelCount, 1);
     assert.deepEqual(models.Models[0].AdvertisedSizes, ['1024x1024']);
     assert.deepEqual(models.Models[0].AdvertisedResolutionTiers.OneK, ['1024x1024']);
+    assert.ok(!models.Models[0].SuggestedSizes.includes('2048x2048'), 'unadvertised 2K is not suggested as a default');
     await assert.rejects(
       run('generate_image.js', ['--prompt', 'test', '--model', 'gpt-image-2', '--szie', '1024x1024', '--dry-run'], {}),
       /Unknown option: --szie/
@@ -161,6 +173,48 @@ const server = http.createServer((request, response) => {
     assert.equal(generated.OutputPath, output);
     assert.equal(generated.NextEditInputPath, output);
     assert.ok(fs.statSync(output).size > 0);
+    const highResolution = await run('generate_image.js', [
+      '--prompt', 'high-resolution test', '--model', 'gpt-image-2', '--size', '2560x1440', '--base-url', base,
+      '--output-path', path.join(temp, 'high-resolution.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(highResolution.RequestedModel, 'gpt-image-2');
+    assert.equal(highResolution.Model, 'gpt-image-2');
+    assert.equal(highResolution.Size, '2560x1440');
+    const fourK = await run('generate_image.js', [
+      '--prompt', '4K high-resolution test', '--model', 'gpt-image-2', '--size', '3840x2160', '--base-url', base,
+      '--output-path', path.join(temp, 'four-k.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(fourK.RequestedModel, 'gpt-image-2');
+    assert.equal(fourK.Model, 'gpt-image-2');
+    assert.equal(fourK.Size, '3840x2160');
+    assert.equal(fourK.ResolutionTier, '4K');
+    const fourKEdit = await run('generate_image.js', [
+      '--prompt', 'Edit this reference at 4K while preserving the composition.', '--model', 'gpt-image-2',
+      '--size', '3840x2160', '--input-image-path', input, '--base-url', base,
+      '--output-path', path.join(temp, 'four-k-edit.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(fourKEdit.Model, 'gpt-image-2');
+    assert.equal(fourKEdit.Size, '3840x2160');
+    assert.equal(fourKEdit.Operation, 'edit');
+    const fourKEditRequest = requests.filter((request) => request.path === '/v1/images/edits').at(-1);
+    assert.equal(fourKEditRequest.form.fields.model, 'gpt-image-2');
+    assert.equal(fourKEditRequest.form.fields.size, '3840x2160');
+    assert.ok(fourKEditRequest.form.files.image, `4K edit file fields: ${JSON.stringify(Object.keys(fourKEditRequest.form.files))}`);
+    assert.ok(fourKEditRequest.form.files.image.bytes.equals(Buffer.from(tinyPng, 'base64')));
+    await assert.rejects(
+      run('generate_image.js', [
+        '--prompt', 'Trigger high-resolution model unavailable', '--model', 'gpt-image-2', '--size', '3840x2160',
+        '--input-image-path', input, '--base-url', base, '--output-path', path.join(temp, 'four-k-model-failure.png'),
+      ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' }),
+      /High-resolution 4K request \(3840x2160\).*selected model\/channel is unavailable.*model gpt-image-2 is not available/
+    );
+    await assert.rejects(
+      run('generate_image.js', [
+        '--prompt', 'Trigger high-resolution failure', '--model', 'gpt-image-2', '--size', '2560x1440', '--base-url', base,
+        '--output-path', path.join(temp, 'high-resolution-failure.png'),
+      ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' }),
+      /High-resolution 2K request \(2560x1440\).*no lower-resolution fallback was attempted/
+    );
     console.log('All Keylink cross-platform Node runtime tests passed.');
   } finally {
     server.close();
