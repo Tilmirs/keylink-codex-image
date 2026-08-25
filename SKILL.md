@@ -87,7 +87,7 @@ node scripts/generate_image.js \
 ## Endpoint Rules
 
 - Default base URL: `https://keylinkclub.com`
-- The default endpoint mode is `chat`; auto routing sends known image models to Images Generations.
+- When the endpoint mode is omitted, unknown models use Chat Completions; known image models use the direct Images endpoints (generations for text-only requests and edits for reference-image requests).
 - Alternate routes: `POST /v1/images/generations` for JSON generation and `POST /v1/images/edits` for multipart reference-image editing.
 - `--route auto` selects direct routing for known image models or images mode, and the active Codex provider for chat when available.
 - `--route direct` always calls Keylink and requires a direct image credential.
