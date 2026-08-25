@@ -637,6 +637,12 @@ if (-not $endpointModeWasExplicit -and $isKnownImageModel) {
 
 $requestedModel = $Model
 $requestedSize = $Size
+$requestedTimeoutSec = $TimeoutSec
+# Native 4K generation/editing can take several minutes. Keep an explicit
+# longer timeout, but never let a 3840-class request expire before 8 minutes.
+if ((Get-ResolutionTier $requestedSize) -eq '4K') {
+    $TimeoutSec = [Math]::Max($TimeoutSec, 480)
+}
 # Preserve the user-selected model ID for every size.  The service/channel
 # decides whether that model supports high resolution; surface a rejection
 # instead of silently switching to another model.
@@ -764,6 +770,8 @@ if ($DryRun) {
         RequestedSize = $requestedSize
         Size = $Size
         ResolutionTier = Get-ResolutionTier $Size
+        RequestedTimeoutSec = $requestedTimeoutSec
+        TimeoutSec = $TimeoutSec
         Payload = $payload
     } | ConvertTo-Json -Depth 20
     return
@@ -1014,4 +1022,6 @@ if ($savedFile.Length -eq 0) {
     SizeFallbackFrom = $sizeFallbackFrom
     SizeFallbackReason = $sizeFallbackReason
     SuggestedModel = $suggestedModel
+    RequestedTimeoutSec = $requestedTimeoutSec
+    TimeoutSec = $TimeoutSec
 } | ConvertTo-Json -Depth 5

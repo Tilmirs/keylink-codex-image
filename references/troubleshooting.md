@@ -8,6 +8,8 @@ The API key is only a credential; it does not contain a model catalog. Run `node
 
 For `gpt-image-2` and the supported Gemini image models, use the conservative default sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition. Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, try `2560x1440` for 2K-class and `3840x2160` for 4K while preserving the selected model ID. If no 4K size is advertised, report the available sizes and ask for explicit approval before local upscaling. If a submitted high-resolution request fails, preserve the service's original status/body and explain that the model, channel, or requested size is unsupported; do not silently fall back to 1K or switch to Chat. A local resize produces a 4K canvas but not native 4K detail.
 
+If a `3840`-class request is still running, allow at least the automatic 480-second timeout (8 minutes); an explicit longer timeout is honored.
+
 For model-level comparison, Nano Banana (`gemini-2.5-flash-image`) is 1K-class, Nano Banana Pro (`gemini-3-pro-image`) supports 1K/2K/4K, and Nano Banana 2 (`gemini-3.1-flash-image`) supports 512p/1K/2K/4K. The live Keylink `/v1/models` response remains authoritative for the current channel.
 
 ## macOS or Linux reports missing PowerShell

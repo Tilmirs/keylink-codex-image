@@ -102,6 +102,7 @@ node scripts/generate_image.js \
 
 - GPT Image and Gemini image-model default: use the conservative sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition. These are the safe defaults when the catalog has no size metadata.
 - Higher-resolution intent: for 16:9, request `2560x1440` as 2K-class or `3840x2160` as 4K. For other aspect ratios, use a size advertised by the selected model; do not invent a capability from a model name alone.
+- 4K wait time: a `3840`-class request automatically has a minimum service timeout of 480 seconds (8 minutes). An explicitly longer timeout is preserved.
 - GPT Image high-resolution routing: preserve the selected model ID and send the requested size to that model. The service catalog remains authoritative; the exact service error is surfaced if the model/channel rejects the dimensions.
 - High-resolution failure: return the original status/body and explain whether the model/channel or requested dimensions are unsupported. Do not retry at 1K, silently switch models, or claim a lower-resolution image satisfies the request.
 - Unsupported 4K before request: report the advertised sizes and ask for explicit approval before local resizing. A local resize is never called native 4K.

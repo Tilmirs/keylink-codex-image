@@ -96,6 +96,7 @@ API Key 只负责鉴权，本身不包含模型列表或分辨率列表。skill 
 - `SuggestedSizes` / `SuggestedAspectRatios` 只是 API 未提供元数据时的候选项，必须明确标记为“未验证”。
 - 默认分辨率策略是 GPT Image 和 Gemini 图片模型统一的保守 1K 尺寸：`1024x1024`、`1536x1024`、`1024x1536`。
 - 用户提出更高分辨率时，16:9 使用 `2560x1440` 或 `3840x2160`；请求失败时返回原始错误和“不支持高分辨率”的具体原因，不自动降级。
+- `3840` 级 4K 请求默认至少等待 8 分钟；如果用户指定更长超时，则使用更长时间。
 - 如果 4K 未在模型能力中公布，先列出实际支持尺寸并询问是否允许本地放大；返回结果必须检查实际宽高。
 - Nano Banana 参考梯度（模型级资料，当前 Keylink 渠道仍以 `/v1/models` 为准）：`gemini-2.5-flash-image` 为 1K；`gemini-3-pro-image` 支持 1K/2K/4K；`gemini-3.1-flash-image` 支持 512p/1K/2K/4K。Gemini 3 的 16:9 示例为 1K `1376x768`、2K `2752x1536`、4K `5504x3072`。
 - Images Generations 使用像素尺寸；Chat Completions 优先使用宽高比。

@@ -242,7 +242,12 @@ async function main() {
   if (args.proxyBaseUrl && args.endpoint) fail('Specify either --proxy-base-url or --endpoint, not both.');
   if (args.aspectRatio && !/^\d+:\d+$/.test(args.aspectRatio)) fail('--aspect-ratio must use W:H notation.');
   if (args.responseFormat && !['url', 'b64_json'].includes(args.responseFormat)) fail('--response-format must be url or b64_json.');
-  const timeoutSec = common.timeout(args.timeoutSec, 300);
+  const requestedTimeoutSec = common.timeout(args.timeoutSec, 300);
+  // Native 4K generation/editing can take several minutes.  Keep an explicit
+  // longer timeout, but never let a 3840-class request expire before 8 minutes.
+  const timeoutSec = resolutionTier(args.size) === '4K'
+    ? Math.max(requestedTimeoutSec, 480)
+    : requestedTimeoutSec;
 
   const hasInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
   const mode = args.endpointMode || (isKnownImageModel(args.model) ? 'images' : 'chat');
@@ -293,7 +298,8 @@ async function main() {
     Operation: hasInputImage ? 'edit' : 'generate', EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint,
     RequestFormat: mode === 'images' && hasInputImage ? 'multipart/form-data' : 'application/json',
     RequestedModel: requestedModel, Model: effectiveArgs.model, RequestedSize: requestedSize,
-    Size: activeSize, ResolutionTier: resolutionTier(activeSize), Payload: payload,
+    Size: activeSize, ResolutionTier: resolutionTier(activeSize), RequestedTimeoutSec: requestedTimeoutSec,
+    TimeoutSec: timeoutSec, Payload: payload,
   }, null, 2));
 
   const noAuth = args.noAuth || (route === 'codex' && common.isLoopback(resolvedEndpoint) && !args.apiKey && !args.apiKeyFile);
@@ -412,7 +418,7 @@ async function main() {
     FallbackFromEndpoint: fallbackFromEndpoint, FallbackReason: fallbackReason,
     RequestedSize: requestedSize, Size: activeSize, SizeFallbackFrom: sizeFallbackFrom,
     SizeFallbackReason: sizeFallbackReason, SuggestedModel: suggestedModel,
-    ResolutionTier: resolutionTier(activeSize),
+    ResolutionTier: resolutionTier(activeSize), RequestedTimeoutSec: requestedTimeoutSec, TimeoutSec: timeoutSec,
   }, null, 2));
 }
 

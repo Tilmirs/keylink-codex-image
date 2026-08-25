@@ -137,6 +137,15 @@ const server = http.createServer((request, response) => {
       run('list_image_models.js', ['--timeout-sec', 'invalid', '--dry-run'], {}),
       /timeout-sec must be an integer/
     );
+    const fourKTimeout = await run('generate_image.js', [
+      '--prompt', '4K timeout test', '--model', 'gpt-image-2', '--size', '3840x2160', '--timeout-sec', '300', '--dry-run',
+    ], {});
+    assert.equal(fourKTimeout.RequestedTimeoutSec, 300);
+    assert.equal(fourKTimeout.TimeoutSec, 480, '4K requests wait at least eight minutes');
+    const longerFourKTimeout = await run('generate_image.js', [
+      '--prompt', '4K longer timeout test', '--model', 'gpt-image-2', '--size', '3840x2160', '--timeout-sec', '600', '--dry-run',
+    ], {});
+    assert.equal(longerFourKTimeout.TimeoutSec, 600, 'explicit longer timeout is preserved');
     await assert.rejects(
       run('generate_image.js', ['--prompt', 'test', '--model', 'chat-image-model', '--endpoint-mode', 'chat', '--base-url', base], { KEYLINK_IMAGE_API_KEY: 'secret-preview-test-key' }),
       (error) => error.message.includes('<redacted>') && !error.message.includes('secret-preview-test-key')

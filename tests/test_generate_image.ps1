@@ -277,6 +277,23 @@ base_url = "http://127.0.0.1:9/v1"
     catch { $imagesRatioRejected = $_.Exception.Message -match 'Size|AspectRatio' }
     Assert-True $imagesRatioRejected 'images aspect ratio is rejected instead of silently ignored'
 
+    $fourKTimeout = & $Generator `
+        -Prompt '4K timeout test' `
+        -Model 'gpt-image-2' `
+        -Size '3840x2160' `
+        -TimeoutSec 300 `
+        -DryRun | ConvertFrom-Json
+    Assert-True ($fourKTimeout.RequestedTimeoutSec -eq 300) '4K preserves requested timeout metadata'
+    Assert-True ($fourKTimeout.TimeoutSec -eq 480) '4K timeout floor is eight minutes'
+
+    $longerFourKTimeout = & $Generator `
+        -Prompt '4K longer timeout test' `
+        -Model 'gpt-image-2' `
+        -Size '3840x2160' `
+        -TimeoutSec 600 `
+        -DryRun | ConvertFrom-Json
+    Assert-True ($longerFourKTimeout.TimeoutSec -eq 600) 'explicit longer 4K timeout is preserved'
+
     $chatResult = & $Generator `
         -Prompt 'chat test' `
         -Model 'chat-model' `
