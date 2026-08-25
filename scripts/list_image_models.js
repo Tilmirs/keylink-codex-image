@@ -24,6 +24,19 @@ function resolutions(model) {
   return { sizes: [...sizes].sort(), ratios: [...new Set([...json.matchAll(/(?<!\d)(\d{1,2}:\d{1,2})(?!\d)/g)].map((m) => m[1]))].sort() };
 }
 
+function resolutionTiers(sizes) {
+  const tiers = { OneK: [], TwoK: [], FourK: [] };
+  for (const size of sizes) {
+    const match = size.match(/^(\d+)x(\d+)$/);
+    if (!match) continue;
+    const longEdge = Math.max(Number(match[1]), Number(match[2]));
+    if (longEdge >= 3500) tiers.FourK.push(size);
+    else if (longEdge >= 1800) tiers.TwoK.push(size);
+    else tiers.OneK.push(size);
+  }
+  return tiers;
+}
+
 async function main() {
   const args = common.parseArgs(process.argv.slice(2));
   common.validateArgs(args, [
@@ -52,12 +65,14 @@ async function main() {
     const proof = evidence(id, JSON.stringify(item));
     if (!args.includeAllModels && !proof) continue;
     const resolution = resolutions(item);
+    const tiers = resolutionTiers(resolution.sizes);
     models.push({
       Id: id, DisplayName: typeof item === 'string' ? id : common.first(item.display_name, item.name, id),
       ImageCapable: Boolean(proof), ImageCapabilityEvidence: proof, CandidateEndpointModes: ['chat', 'images'],
       AdvertisedSizes: resolution.sizes, AdvertisedAspectRatios: resolution.ratios,
+      AdvertisedResolutionTiers: tiers,
       ResolutionSource: resolution.sizes.length || resolution.ratios.length ? 'api-metadata' : 'not-advertised',
-      SuggestedSizes: resolution.sizes.length ? [] : ['1024x1024', '1536x1024', '1024x1536'],
+      SuggestedSizes: resolution.sizes.length ? [] : ['2048x2048', '2048x1152', '1152x2048', '1024x1024', '1536x1024', '1024x1536'],
       SuggestedAspectRatios: resolution.ratios.length ? [] : ['1:1', '16:9', '9:16', '4:3', '3:4'],
     });
   }

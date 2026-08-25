@@ -50,7 +50,7 @@ try {
                     throw "Unexpected path: $requestLine"
                 }
                 $responseBody = '{"data":[' +
-                    '{"id":"gpt-image-2","name":"GPT Image 2","capabilities":{"image_generation":true,"sizes":["1024x1024","1536x1024"],"aspect_ratios":["1:1","16:9"]}},' +
+                    '{"id":"gpt-image-2","name":"GPT Image 2","capabilities":{"image_generation":true,"sizes":["1024x1024","1536x1024","4096x2160"],"aspect_ratios":["1:1","16:9"]}},' +
                     '{"id":"gemini-3-pro-image","display_name":"Gemini 3 Pro Image","supported_sizes":[{"width":1024,"height":1024},{"width":2048,"height":1152}]},' +
                     '{"id":"imagen-4","name":"Imagen 4"},' +
                     '{"id":"text-model","name":"Text Model"}' +
@@ -90,8 +90,10 @@ try {
     $imagen = @($result.Models | Where-Object Id -eq 'imagen-4')[0]
     Assert-True ($gpt.ResolutionSource -eq 'api-metadata') 'GPT resolution metadata source'
     Assert-True (@($gpt.AdvertisedSizes) -contains '1536x1024') 'GPT advertised size'
+    Assert-True (@($gpt.AdvertisedResolutionTiers.FourK) -contains '4096x2160') 'GPT 4K tier classification'
     Assert-True (@($gpt.AdvertisedAspectRatios) -contains '16:9') 'GPT advertised aspect ratio'
     Assert-True (@($gemini.AdvertisedSizes) -contains '2048x1152') 'Gemini nested size metadata'
+    Assert-True (@($gemini.AdvertisedResolutionTiers.TwoK) -contains '2048x1152') 'Gemini 2K tier classification'
     Assert-True (@($imagen.SuggestedSizes) -contains '1024x1024') 'unadvertised model receives suggestions'
     Assert-True ($request.Authorization -eq 'Bearer model-list-test-key') 'model discovery authorization'
 

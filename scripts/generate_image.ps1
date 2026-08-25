@@ -72,7 +72,8 @@ function Resolve-KeylinkEndpoint {
     param(
         [string]$ExplicitEndpoint,
         [string]$ResolvedBaseUrl,
-        [string]$Mode
+        [string]$Mode,
+        [switch]$HasInputImage
     )
 
     if (-not [string]::IsNullOrWhiteSpace($ExplicitEndpoint)) {
@@ -82,7 +83,7 @@ function Resolve-KeylinkEndpoint {
     $base = $ResolvedBaseUrl
     $base = $base.TrimEnd('/')
 
-    $route = if ($Mode -eq 'chat') { 'chat/completions' } else { 'images/generations' }
+    $route = if ($Mode -eq 'chat') { 'chat/completions' } elseif ($HasInputImage) { 'images/edits' } else { 'images/generations' }
     if ($base -match '/v1$') {
         return "$base/$route"
     }
@@ -285,6 +286,15 @@ function Resolve-KeylinkApiKey {
 function Get-ImageMimeType {
     param([Parameter(Mandatory)][string]$Path)
 
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ge 8 -and $bytes[0] -eq 0x89 -and $bytes[1] -eq 0x50 -and $bytes[2] -eq 0x4E -and $bytes[3] -eq 0x47 -and $bytes[4] -eq 0x0D -and $bytes[5] -eq 0x0A -and $bytes[6] -eq 0x1A -and $bytes[7] -eq 0x0A) { return 'image/png' }
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xD8 -and $bytes[2] -eq 0xFF) { return 'image/jpeg' }
+    if ($bytes.Length -ge 6) {
+        $header = [Text.Encoding]::ASCII.GetString($bytes, 0, 6)
+        if ($header -eq 'GIF87a' -or $header -eq 'GIF89a') { return 'image/gif' }
+    }
+    if ($bytes.Length -ge 12 -and [Text.Encoding]::ASCII.GetString($bytes, 0, 4) -eq 'RIFF' -and [Text.Encoding]::ASCII.GetString($bytes, 8, 4) -eq 'WEBP') { return 'image/webp' }
+    if ($bytes.Length -ge 12 -and [Text.Encoding]::ASCII.GetString($bytes, 4, 4) -eq 'ftyp' -and @('avif', 'avis') -contains [Text.Encoding]::ASCII.GetString($bytes, 8, 4)) { return 'image/avif' }
     switch ([IO.Path]::GetExtension($Path).ToLowerInvariant()) {
         '.png'  { return 'image/png' }
         '.webp' { return 'image/webp' }
@@ -292,7 +302,7 @@ function Get-ImageMimeType {
         '.avif' { return 'image/avif' }
         '.jpg'  { return 'image/jpeg' }
         '.jpeg' { return 'image/jpeg' }
-        default { return 'application/octet-stream' }
+        default { return $null }
     }
 }
 
@@ -308,6 +318,12 @@ function Get-LocalImageDataUrl {
     }
 
     $mimeType = Get-ImageMimeType $resolvedPath
+    if (-not $mimeType) {
+        throw 'Input image must be PNG, JPEG, WebP, GIF, or AVIF.'
+    }
+    if ((Get-Item -LiteralPath $resolvedPath).Length -eq 0) {
+        throw "Input image is empty: $resolvedPath"
+    }
     if ($Sanitize) {
         $length = (Get-Item -LiteralPath $resolvedPath).Length
         return "data:$mimeType;base64,<omitted:$length-bytes>"
@@ -315,6 +331,68 @@ function Get-LocalImageDataUrl {
 
     $base64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($resolvedPath))
     return "data:$mimeType;base64,$base64"
+}
+
+function Get-ReferenceImageBytes {
+    param(
+        [string]$Url,
+        [string]$Path,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
+    )
+
+    if ($Path) {
+        $resolvedPath = [IO.Path]::GetFullPath($Path)
+        if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+            throw "Input image does not exist: $resolvedPath"
+        }
+        $mimeType = Get-ImageMimeType $resolvedPath
+        if (-not $mimeType) {
+            throw 'Input image must be PNG, JPEG, WebP, GIF, or AVIF.'
+        }
+        if ((Get-Item -LiteralPath $resolvedPath).Length -eq 0) {
+            throw "Input image is empty: $resolvedPath"
+        }
+        return [pscustomobject]@{
+            Bytes = [IO.File]::ReadAllBytes($resolvedPath)
+            MimeType = $mimeType
+            FileName = ([IO.Path]::GetFileName($resolvedPath) | ForEach-Object { if ($_){$_}else{'reference.png'} })
+        }
+    }
+
+    if ($Url -match '^data:(?<mime>image\/[A-Za-z0-9.+-]+);base64,(?<data>[A-Za-z0-9+/=_-]+)$') {
+        $mimeType = $Matches['mime'].ToLowerInvariant()
+        $bytes = ConvertFrom-FlexibleBase64 $Matches['data']
+        if ($bytes.Length -eq 0) { throw 'Reference image data URL is empty.' }
+        return [pscustomobject]@{ Bytes = $bytes; MimeType = $mimeType; FileName = "reference.$($mimeType.Split('/')[1] -replace 'jpeg','jpg')" }
+    }
+
+    $client = [Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+    try {
+        $download = $client.GetAsync($Url).GetAwaiter().GetResult()
+        if (-not $download.IsSuccessStatusCode) { throw "Reference image download failed: HTTP $([int]$download.StatusCode)" }
+        $bytes = $download.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+        if ($bytes.Length -eq 0) { throw 'Reference image download returned an empty file.' }
+        $mimeType = if ($download.Content.Headers.ContentType) { $download.Content.Headers.ContentType.MediaType } else { $null }
+        $uri = [Uri]$Url
+        $fileName = [IO.Path]::GetFileName($uri.AbsolutePath)
+        if (-not $fileName) { $fileName = 'reference.png' }
+        if (-not $mimeType) {
+            switch ([IO.Path]::GetExtension($fileName).ToLowerInvariant()) {
+                '.png' { $mimeType = 'image/png' }
+                '.jpg' { $mimeType = 'image/jpeg' }
+                '.jpeg' { $mimeType = 'image/jpeg' }
+                '.webp' { $mimeType = 'image/webp' }
+                '.gif' { $mimeType = 'image/gif' }
+                '.avif' { $mimeType = 'image/avif' }
+            }
+        }
+        if (-not $mimeType -or -not $mimeType.StartsWith('image/')) { throw 'Reference image URL did not return a supported image content type.' }
+        return [pscustomobject]@{ Bytes = $bytes; MimeType = $mimeType; FileName = $fileName }
+    }
+    finally {
+        $client.Dispose()
+    }
 }
 
 function Get-ObjectProperty {
@@ -427,9 +505,6 @@ if (-not $endpointModeWasExplicit -and $isKnownImageModel) {
     $EndpointMode = 'images'
 }
 
-if ($EndpointMode -eq 'images' -and ($InputImageUrl -or $InputImagePath)) {
-    throw 'The images mode in this helper is text-to-image only. Use -EndpointMode chat for a reference image.'
-}
 if ($EndpointMode -eq 'chat' -and $Size) {
     throw 'The chat endpoint uses -AspectRatio when supported; -Size is only sent in images mode.'
 }
@@ -469,7 +544,7 @@ $resolvedBaseUrl = if ($effectiveRoute -eq 'codex') {
 else {
     Get-DirectKeylinkBaseUrl $BaseUrl
 }
-$resolvedEndpoint = Resolve-KeylinkEndpoint $Endpoint $resolvedBaseUrl $EndpointMode
+$resolvedEndpoint = Resolve-KeylinkEndpoint $Endpoint $resolvedBaseUrl $EndpointMode -HasInputImage:([bool]($InputImageUrl -or $InputImagePath))
 if ($UseCCSwitchCredential) {
     if ($effectiveRoute -notin @('direct', 'custom')) {
         throw 'Use -UseCCSwitchCredential only with a direct Keylink route.'
@@ -497,6 +572,12 @@ if ($EndpointMode -eq 'chat') {
     }
 
     $messages = @()
+    if ($InputImageUrl -or $InputImagePath) {
+        $messages += [ordered]@{
+            role = 'system'
+            content = 'Edit the supplied image according to the user instruction. Preserve all content the user did not ask to change. Return the edited image itself, not a description or instructions.'
+        }
+    }
     if ($AspectRatio) {
         $imageConfiguration = [ordered]@{ imageConfig = [ordered]@{ aspectRatio = $AspectRatio } }
         $messages += [ordered]@{
@@ -512,7 +593,22 @@ if ($EndpointMode -eq 'chat') {
     }
 }
 else {
-    $payload = [ordered]@{ model = $Model; prompt = $Prompt; n = 1 }
+    $effectivePrompt = if ($InputImageUrl -or $InputImagePath) {
+        "Edit the supplied image according to the user instruction. Preserve all content the user did not ask to change. Return the edited image itself, not a description or instructions.`nUser instruction: $Prompt"
+    }
+    else { $Prompt }
+    $payload = [ordered]@{ model = $Model; prompt = $effectivePrompt; n = 1 }
+    if ($InputImageUrl -or $InputImagePath) {
+        if ($DryRun) {
+            if ($InputImagePath) {
+                $resolvedInput = [IO.Path]::GetFullPath($InputImagePath)
+                $payload['image'] = [ordered]@{ field = 'image'; filename = [IO.Path]::GetFileName($resolvedInput); contentType = Get-ImageMimeType $resolvedInput; bytes = (Get-Item -LiteralPath $resolvedInput).Length }
+            }
+            else {
+                $payload['image'] = [ordered]@{ field = 'image'; source = $InputImageUrl }
+            }
+        }
+    }
     if ($Size) { $payload['size'] = $Size }
     if ($Quality) { $payload['quality'] = $Quality }
     if ($Background) { $payload['background'] = $Background }
@@ -522,9 +618,11 @@ else {
 
 if ($DryRun) {
     [pscustomobject]@{
+        Operation = if ($InputImageUrl -or $InputImagePath) { 'edit' } else { 'generate' }
         EndpointMode = $EndpointMode
         Route = $effectiveRoute
         Endpoint = $resolvedEndpoint
+        RequestFormat = if ($EndpointMode -eq 'images' -and ($InputImageUrl -or $InputImagePath)) { 'multipart/form-data' } else { 'application/json' }
         Payload = $payload
     } | ConvertTo-Json -Depth 20
     return
@@ -546,16 +644,54 @@ $headers = @{}
 if ($apiKey) {
     $headers.Authorization = "Bearer $apiKey"
 }
-$requestJson = $payload | ConvertTo-Json -Depth 20 -Compress
+$hasInputImage = [bool]($InputImageUrl -or $InputImagePath)
+$response = $null
 
 try {
-    $response = Invoke-RestMethod `
-        -Uri $resolvedEndpoint `
-        -Method Post `
-        -Headers $headers `
-        -ContentType 'application/json; charset=utf-8' `
-        -Body ([Text.Encoding]::UTF8.GetBytes($requestJson)) `
-        -TimeoutSec $TimeoutSec
+    if ($EndpointMode -eq 'images' -and $hasInputImage) {
+        Add-Type -AssemblyName System.Net.Http
+        $reference = Get-ReferenceImageBytes -Url $InputImageUrl -Path $InputImagePath -TimeoutSeconds $TimeoutSec
+        $client = [Net.Http.HttpClient]::new()
+        $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+        $multipart = [Net.Http.MultipartFormDataContent]::new()
+        $fields = [ordered]@{ model = $Model; prompt = $payload.prompt; n = '1' }
+        if ($Size) { $fields['size'] = $Size }
+        if ($Quality) { $fields['quality'] = $Quality }
+        if ($Background) { $fields['background'] = $Background }
+        if ($OutputFormat) { $fields['output_format'] = $OutputFormat }
+        if ($ResponseFormat) { $fields['response_format'] = $ResponseFormat }
+        foreach ($entry in $fields.GetEnumerator()) {
+            $multipart.Add([Net.Http.StringContent]::new([string]$entry.Value), [string]$entry.Key)
+        }
+        $fileContent = [Net.Http.ByteArrayContent]::new($reference.Bytes)
+        $fileContent.Headers.ContentType = [Net.Http.Headers.MediaTypeHeaderValue]::Parse($reference.MimeType)
+        $multipart.Add($fileContent, 'image', $reference.FileName)
+        $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post, $resolvedEndpoint)
+        $request.Content = $multipart
+        if ($apiKey) {
+            $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $apiKey)
+        }
+        try {
+            $httpResponse = $client.SendAsync($request).GetAwaiter().GetResult()
+            $responseText = $httpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            if (-not $httpResponse.IsSuccessStatusCode) { throw "HTTP $([int]$httpResponse.StatusCode): $responseText" }
+            $response = $responseText | ConvertFrom-Json
+        }
+        finally {
+            $request.Dispose()
+            $client.Dispose()
+        }
+    }
+    else {
+        $requestJson = $payload | ConvertTo-Json -Depth 20 -Compress
+        $response = Invoke-RestMethod `
+            -Uri $resolvedEndpoint `
+            -Method Post `
+            -Headers $headers `
+            -ContentType 'application/json; charset=utf-8' `
+            -Body ([Text.Encoding]::UTF8.GetBytes($requestJson)) `
+            -TimeoutSec $TimeoutSec
+    }
 }
 catch {
     $errorDetails = Get-ObjectProperty $_ 'ErrorDetails'
@@ -610,7 +746,9 @@ if ($savedFile.Length -eq 0) {
 
 [pscustomobject]@{
     OutputPath = $savedFile.FullName
+    NextEditInputPath = $savedFile.FullName
     Bytes = $savedFile.Length
+    Operation = if ($InputImageUrl -or $InputImagePath) { 'edit' } else { 'generate' }
     Model = $Model
     EndpointMode = $EndpointMode
     Route = $effectiveRoute

@@ -25,6 +25,8 @@ $tempRoot = Join-Path $tempBase ("keylink-image-tests-" + [Guid]::NewGuid().ToSt
 $portFile = Join-Path $tempRoot 'port.txt'
 $chatOutput = Join-Path $tempRoot 'chat.png'
 $imagesOutput = Join-Path $tempRoot 'images.png'
+$editOutput = Join-Path $tempRoot 'edited.png'
+$editInput = Join-Path $tempRoot 'uploaded image.png'
 $ccswitchDatabase = Join-Path $tempRoot 'cc-switch.db'
 $serverJob = $null
 $oldCodexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME', 'Process')
@@ -44,35 +46,49 @@ try {
         [IO.File]::WriteAllText($PortFile, [string]$port)
         $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/69c7WQAAAABJRU5ErkJggg=='
 
+        function Find-ByteSequence {
+            param([byte[]]$Buffer, [byte[]]$Needle, [int]$StartAt = 0)
+            for ($i = $StartAt; $i -le $Buffer.Length - $Needle.Length; $i++) {
+                $found = $true
+                for ($j = 0; $j -lt $Needle.Length; $j++) {
+                    if ($Buffer[$i + $j] -ne $Needle[$j]) { $found = $false; break }
+                }
+                if ($found) { return $i }
+            }
+            return -1
+        }
+
         try {
-            for ($index = 0; $index -lt 2; $index++) {
+            for ($index = 0; $index -lt 3; $index++) {
                 $client = $listener.AcceptTcpClient()
                 try {
                     $stream = $client.GetStream()
-                    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $false, 1024, $true)
-                    $requestLine = $reader.ReadLine()
-                    $contentLength = 0
-                    $authorization = $null
-
-                    while ($true) {
-                        $line = $reader.ReadLine()
-                        if ([string]::IsNullOrEmpty($line)) { break }
-                        if ($line -match '^Content-Length:\s*(\d+)$') {
-                            $contentLength = [int]$Matches[1]
-                        }
-                        if ($line -match '^Authorization:\s*(.+)$') {
-                            $authorization = $Matches[1]
-                        }
-                    }
-
-                    $buffer = New-Object char[] $contentLength
-                    $read = 0
-                    while ($read -lt $contentLength) {
-                        $count = $reader.ReadBlock($buffer, $read, $contentLength - $read)
+                    $raw = [IO.MemoryStream]::new()
+                    $readBuffer = New-Object byte[] 8192
+                    $headerDelimiter = [Text.Encoding]::ASCII.GetBytes("`r`n`r`n")
+                    $headerEnd = -1
+                    while ($headerEnd -lt 0) {
+                        $count = $stream.Read($readBuffer, 0, $readBuffer.Length)
                         if ($count -le 0) { break }
-                        $read += $count
+                        $raw.Write($readBuffer, 0, $count)
+                        $headerEnd = Find-ByteSequence -Buffer $raw.ToArray() -Needle $headerDelimiter
                     }
-                    $body = -join $buffer[0..([Math]::Max(0, $read - 1))]
+                    $allBytes = $raw.ToArray()
+                    $headerText = [Text.Encoding]::ASCII.GetString($allBytes, 0, [Math]::Max(0, $headerEnd))
+                    $contentLength = 0
+                    if ($headerText -match '(?im)^Content-Length:\s*(\d+)\s*$') { $contentLength = [int]$Matches[1] }
+                    $authorization = $null
+                    if ($headerText -match '(?im)^Authorization:\s*(.+)$') { $authorization = $Matches[1].Trim() }
+                    $bodyStart = $headerEnd + $headerDelimiter.Length
+                    while ($allBytes.Length - $bodyStart -lt $contentLength) {
+                        $count = $stream.Read($readBuffer, 0, $readBuffer.Length)
+                        if ($count -le 0) { break }
+                        $raw.Write($readBuffer, 0, $count)
+                        $allBytes = $raw.ToArray()
+                    }
+                    $bodyBytes = if ($contentLength -gt 0 -and $bodyStart -ge 0 -and $allBytes.Length -ge $bodyStart + $contentLength) { $allBytes[$bodyStart..($bodyStart + $contentLength - 1)] } else { @() }
+                    $body = [Text.Encoding]::UTF8.GetString([byte[]]$bodyBytes)
+                    $requestLine = ($headerText -split "`r?`n")[0]
                     $path = ($requestLine -split ' ')[1]
 
                     if ($path -eq '/v1/chat/completions') {
@@ -204,6 +220,31 @@ base_url = "http://127.0.0.1:9/v1"
         Assert-True ($explicitChat.Payload.model -eq $model) "$model chat payload"
     }
 
+    [IO.File]::WriteAllBytes($editInput, [Convert]::FromBase64String('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/69c7WQAAAABJRU5ErkJggg=='))
+    $editDryRun = & $Generator `
+        -Prompt 'Change only the membrane to silver.' `
+        -Model 'gpt-image-2' `
+        -InputImagePath $editInput `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -DryRun | ConvertFrom-Json
+    Assert-True ($editDryRun.EndpointMode -eq 'images') 'known image model with reference defaults to images mode'
+    Assert-True ($editDryRun.Endpoint -eq "http://127.0.0.1:$port/v1/images/edits") 'reference image uses the images edit endpoint'
+    Assert-True ($editDryRun.RequestFormat -eq 'multipart/form-data') 'reference image uses multipart form data'
+    Assert-True ($editDryRun.Payload.image.field -eq 'image') 'uploaded image uses the image file field'
+    Assert-True ($editDryRun.Payload.image.contentType -eq 'image/png') 'uploaded image content type is detected'
+    Assert-True ($editDryRun.Payload.image.bytes -gt 0) 'uploaded image metadata contains bytes'
+    Assert-True ($editDryRun.Payload.prompt -match 'Preserve all content') 'images edit prompt preserves unspecified content'
+
+    $editChatDryRun = & $Generator `
+        -Prompt 'Change only the membrane to silver.' `
+        -Model 'gpt-image-2' `
+        -EndpointMode chat `
+        -InputImagePath $editInput `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -DryRun | ConvertFrom-Json
+    Assert-True ($editChatDryRun.EndpointMode -eq 'chat') 'explicit chat reference edit mode'
+    Assert-True ($editChatDryRun.Payload.messages[0].content -match 'Preserve all content') 'chat edit instruction preserves unspecified content'
+
     $chatSizeRejected = $false
     try {
         & $Generator -Prompt 'invalid size test' -Model 'chat-model' -EndpointMode chat -Size '1536x1024' -DryRun | Out-Null
@@ -235,18 +276,33 @@ base_url = "http://127.0.0.1:9/v1"
         -Size '1536x1024' `
         -OutputPath $imagesOutput | ConvertFrom-Json
 
+    $editResult = & $Generator `
+        -Prompt 'Change only the membrane to silver.' `
+        -Model 'gpt-image-2' `
+        -InputImagePath $editInput `
+        -Route auto `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -ApiKey 'ccswitch-test-key' `
+        -OutputPath $editOutput | ConvertFrom-Json
+
     Wait-Job -Job $serverJob -Timeout 10 | Out-Null
     $requests = @(Receive-Job -Job $serverJob)
 
     Assert-True ($chatResult.EndpointMode -eq 'chat') 'chat result mode'
     Assert-True ($imagesResult.EndpointMode -eq 'images') 'images result mode'
+    Assert-True ($editResult.EndpointMode -eq 'images') 'edit result mode'
+    Assert-True ($chatResult.NextEditInputPath -eq $chatOutput) 'chat result exposes next edit input path'
+    Assert-True ($imagesResult.NextEditInputPath -eq $imagesOutput) 'images result exposes next edit input path'
+    Assert-True ($editResult.NextEditInputPath -eq $editOutput) 'edit result exposes next edit input path'
     Assert-True ($chatResult.Route -eq 'codex') 'chat uses the Codex route'
     Assert-True ($imagesResult.Route -eq 'direct') 'gpt-image-2 uses the direct route'
     Assert-True ((Get-Item -LiteralPath $chatOutput).Length -gt 8) 'chat image was written'
     Assert-True ((Get-Item -LiteralPath $imagesOutput).Length -gt 8) 'images response was written'
-    Assert-True ($requests.Count -eq 2) 'mock server received two requests'
+    Assert-True ((Get-Item -LiteralPath $editOutput).Length -gt 8) 'edited response was written'
+    Assert-True ($requests.Count -eq 3) 'mock server received three requests'
     Assert-True ($requests[0].Path -eq '/v1/chat/completions') 'chat request path'
     Assert-True ($requests[1].Path -eq '/v1/images/generations') 'images request path'
+    Assert-True ($requests[2].Path -eq '/v1/images/edits') 'images edit request path'
     Assert-True ($null -eq $requests[0].Authorization) 'chat request omits authorization in no-auth mode'
     Assert-True ($requests[1].Authorization -eq 'Bearer ccswitch-test-key') 'current CCSwitch provider authorization header'
 
@@ -256,6 +312,8 @@ base_url = "http://127.0.0.1:9/v1"
     Assert-True ($chatBody.extra_body.imageConfig.aspectRatio -eq '16:9') 'chat aspect ratio payload'
     Assert-True ($imagesBody.model -eq 'gpt-image-2') 'images model payload'
     Assert-True ($imagesBody.size -eq '1536x1024') 'images size payload'
+    Assert-True ($requests[2].Body -match '(?i)(image|filename)') 'images edit multipart includes image field'
+    Assert-True ($requests[2].Body -match '(?i)prompt') 'images edit multipart includes prompt field'
 
     'All Keylink image helper tests passed.'
 }

@@ -6,11 +6,23 @@ Use this guide after a request fails. Preserve the user's requested model and en
 
 The API key is only a credential; it does not contain a model catalog. Run `node scripts/list_image_models.js` internally to query `/v1/models`. The helper filters likely image-capable models and returns capability evidence without exposing the key. If the response includes sizes or aspect ratios, they appear as advertised values. If it does not, the helper returns explicitly unverified suggestions. The model and resolution still require user selection when multiple choices are available; ask for that choice in natural language and translate it into script parameters internally.
 
+Use a 2K-class advertised size by default; if 2K is unavailable, request the best advertised 1K-class size. Only attempt a 4K size after the user explicitly asks for 4K/UHD/4096. If no 4K size is advertised, report the available sizes and ask for explicit approval before local upscaling. A local resize produces a 4K canvas but not native 4K detail.
+
 ## macOS or Linux reports missing PowerShell
 
 Do not install PowerShell. Use the Node.js helpers shipped with the skill. Codex supplies the Node runtime; locate its executable through the workspace dependency runtime when `node` is not already on `PATH`. The `.ps1` files are Windows compatibility entrypoints only.
 
+## Built-in ImageGen was selected
+
+The host may select the built-in ImageGen when both skills match a generic image request. `allow_implicit_invocation: true` makes Keylink eligible but does not define provider priority. To guarantee Keylink, invoke `$keylink-image`, say “用 Keylink 生成/编辑”, or explicitly say “不要使用内置 ImageGen，使用 Keylink”. Do not claim that an unqualified request was sent to Keylink unless the Keylink helper output is visible.
+
 After generation, inspect the saved file's actual width and height. For Chat Completions, the requested aspect ratio may be honored without the response exposing a fixed pixel-size contract.
+
+## Follow-up edit or uploaded image
+
+When the user asks to change part of an image generated earlier, reuse that generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. Known image models use `/v1/images/edits` and upload the bytes as the multipart `image` field; explicit Chat mode uses `image_url`. If an edit returns `image is required`, inspect the request content type and field name first—JSON `input_image` is not a file upload for this endpoint. Surface any remaining service error and let the user choose an explicitly supported alternate endpoint.
+
+If an edit appears to regenerate from the text prompt, inspect the command before diagnosing the model: confirm that `--input-image-path` equals the immediately preceding successful result's `NextEditInputPath`. A visually similar or older filename is not sufficient.
 
 ## Model rejected by chat
 

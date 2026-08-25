@@ -285,9 +285,25 @@ function Get-ResolutionMetadata {
     $aspectRatios = @([regex]::Matches($modelJson, '(?<!\d)(?<ratio>\d{1,2}:\d{1,2})(?!\d)') |
         ForEach-Object { $_.Groups['ratio'].Value } | Sort-Object -Unique)
 
+    $oneK = @()
+    $twoK = @()
+    $fourK = @()
+    foreach ($size in $sizes) {
+        if ($size -notmatch '^(?<width>\d+)x(?<height>\d+)$') { continue }
+        $longEdge = [Math]::Max([int]$Matches['width'], [int]$Matches['height'])
+        if ($longEdge -ge 3500) { $fourK += $size }
+        elseif ($longEdge -ge 1800) { $twoK += $size }
+        else { $oneK += $size }
+    }
+
     return [pscustomobject]@{
         AdvertisedSizes = $sizes
         AdvertisedAspectRatios = $aspectRatios
+        AdvertisedResolutionTiers = [pscustomobject]@{
+            OneK = @($oneK)
+            TwoK = @($twoK)
+            FourK = @($fourK)
+        }
     }
 }
 
@@ -370,8 +386,9 @@ foreach ($rawModel in @($rawModels)) {
         CandidateEndpointModes = @('chat', 'images')
         AdvertisedSizes = @($resolution.AdvertisedSizes)
         AdvertisedAspectRatios = @($resolution.AdvertisedAspectRatios)
+        AdvertisedResolutionTiers = $resolution.AdvertisedResolutionTiers
         ResolutionSource = if (@($resolution.AdvertisedSizes).Count -gt 0 -or @($resolution.AdvertisedAspectRatios).Count -gt 0) { 'api-metadata' } else { 'not-advertised' }
-        SuggestedSizes = if (@($resolution.AdvertisedSizes).Count -eq 0) { @('1024x1024', '1536x1024', '1024x1536') } else { @() }
+        SuggestedSizes = if (@($resolution.AdvertisedSizes).Count -eq 0) { @('2048x2048', '2048x1152', '1152x2048', '1024x1024', '1536x1024', '1024x1536') } else { @() }
         SuggestedAspectRatios = if (@($resolution.AdvertisedAspectRatios).Count -eq 0) { @('1:1', '16:9', '9:16', '4:3', '3:4') } else { @() }
     }
 }

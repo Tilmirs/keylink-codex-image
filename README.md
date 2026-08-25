@@ -42,7 +42,7 @@ bash ./install.sh
 
 ## 用户怎么使用
 
-安装后，用户不需要输入代码、JSON、参数、路径或密钥。新版 skill 已把“生成、创建、绘制、渲染、编辑图片”等普通请求放到触发描述最前面，因此即使用户没有写 Keylink，Codex 也更容易优先选择本 skill。
+安装后，用户不需要输入代码、JSON、参数、路径或密钥。新版 skill 已把“生成、创建、绘制、渲染、编辑图片”等普通请求放到触发描述最前面，因此即使用户没有写 Keylink，Codex 也更容易选择本 skill。但 Codex 当前没有公开的 skill 优先级字段；当内置 ImageGen 与本 skill 同时匹配时，宿主仍可能选择内置 ImageGen。
 
 不过 OpenAI 当前没有提供 skill 优先级字段；当 `keylink-image` 与内置 `imagegen` 同时匹配时，完全不提提供方的请求仍可能被宿主分配给 `imagegen`。需要确保走 Keylink 时，推荐以下任一种自然语言方式：
 
@@ -62,6 +62,7 @@ bash ./install.sh
 ## 能力
 
 - 支持 `POST /v1/chat/completions` 生图和参考图编辑。
+- 支持两种图生图流程：把上一轮生成结果作为下一轮输入继续修改，或直接把用户上传的图片和新的 prompt 一起发送；已知图片模型的文生图使用 Images Generations，带参考图时使用 `/v1/images/edits` 的 multipart `image` 文件字段，也可显式选择 Chat Completions，并返回保存后的修改图片。
 - 支持 `POST /v1/images/generations` 文生图。
 - 自动路由以下模型到 Keylink Images Generations，同时仍允许用户显式选择 Chat Completions：
   - `gpt-image-2`
@@ -69,6 +70,8 @@ bash ./install.sh
   - `gemini-2.5-flash-image`
   - `gemini-3.1-flash-image`
 - 通过 `GET /v1/models` 发现当前凭据可用的图片模型和服务端公布的尺寸信息。
+- 默认使用与画幅匹配的 2K 级尺寸；如果平台没有 2K，则请求 1K 级尺寸并明确告知。只有用户明确要求 4K/UHD/4096 时才尝试 4K。4K 必须由平台图像端点生成，并在图生图时携带原图作为参考。
+- 如果用户明确要求 4K 但平台不支持，会先列出支持尺寸并询问是否允许本地放大；未得到同意前不会放大，也不会把低分辨率结果称为 4K。
 - 动态读取 Codex/CCSwitch 当前代理地址，并允许 AI 处理用户手动修改后的代理地址。
 - 支持常见 OpenAI 兼容返回格式，包括 URL、Base64 和 Chat 消息中的图片。
 
@@ -87,7 +90,10 @@ bash ./install.sh
 API Key 只负责鉴权，本身不包含模型列表或分辨率列表。skill 会查询 `/v1/models`：
 
 - `AdvertisedSizes` / `AdvertisedAspectRatios` 表示 API 实际公布的能力。
+- `AdvertisedResolutionTiers` 会按长边把已公布尺寸归类为 1K、2K、4K，便于选择；它不保证后端每个渠道都接受每个尺寸。
 - `SuggestedSizes` / `SuggestedAspectRatios` 只是 API 未提供元数据时的候选项，必须明确标记为“未验证”。
+- 默认分辨率策略是 2K 级别；如果 2K 不可用则请求 1K。只有用户明确提出 4K 才尝试 4K。
+- 如果 4K 不可用，先列出实际支持尺寸并询问是否允许本地放大；返回结果必须检查实际宽高。
 - Images Generations 使用像素尺寸；Chat Completions 优先使用宽高比。
 - 保存图片后，AI 还会检查实际格式和宽高。
 
@@ -96,6 +102,7 @@ API Key 只负责鉴权，本身不包含模型列表或分辨率列表。skill 
 - 默认直连地址：`https://keylinkclub.com`
 - Chat Completions：`/v1/chat/completions`
 - Images Generations：`/v1/images/generations`
+- Images Edits（参考图）：`/v1/images/edits`（`multipart/form-data`，文件字段 `image`）
 - 模型发现：`/v1/models`
 - Codex/CCSwitch 路由会在每次执行时读取当前 provider 地址，不固定 localhost 端口。
 - 手动代理覆盖顺序为：显式代理地址、`KEYLINK_PROXY_BASE_URL`、Codex `config.toml`。

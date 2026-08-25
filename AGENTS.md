@@ -6,6 +6,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 
 - Users describe the image, model preference, resolution or aspect ratio, reference image, and destination in natural language.
 - Never ask users to type or paste PowerShell, JSON, API parameters, file paths, or API keys during normal image generation or editing.
+- For follow-up edits, the latest successful image output is the default reference. Preserve and reuse its exact returned path; do not select an older source image by filename resemblance.
 - If more than one image model or resolution is available, present a short readable list and accept replies such as "the second model", "Gemini in 16:9", or "square high resolution".
 - Ask for host approval immediately before reading a local CCSwitch credential, writing outside the workspace, or making a restricted network request.
 - Report the saved image path and verify the returned file after generation.
@@ -55,9 +56,10 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
    - `gemini-2.5-flash-image`
    - `gemini-3.1-flash-image`
 3. An explicit `-EndpointMode chat` must continue to allow any model through Chat Completions. Do not silently change the requested model, endpoint, or route after an API failure.
-4. Reference-image editing uses Chat Completions. Images Generations is text-to-image only until Keylink documents a compatible edit request.
-5. The Codex/CCSwitch proxy address is dynamic. Read the active provider configuration on every run. Preserve the override order: `-ProxyBaseUrl`, `KEYLINK_PROXY_BASE_URL`, then Codex `config.toml`.
-6. A local proxy may support Chat Completions but return 404 for Images Generations. In that case, explain the route limitation and use direct Keylink only after the required credential approval.
+4. Known image models use `/v1/images/generations` JSON for text-only generation and `/v1/images/edits` multipart with an `image` file field for reference-image editing. Chat Completions remains an explicit alternate using an OpenAI-style `image_url` block; do not silently switch after an endpoint failure.
+5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. The helper's `NextEditInputPath` is the canonical value to carry forward.
+6. The Codex/CCSwitch proxy address is dynamic. Read the active provider configuration on every run. Preserve the override order: `-ProxyBaseUrl`, `KEYLINK_PROXY_BASE_URL`, then Codex `config.toml`.
+7. A local proxy may support Chat Completions but return 404 for Images Generations. In that case, explain the route limitation and use direct Keylink only after the required credential approval.
 
 ## Credential and safety invariants
 
@@ -75,6 +77,8 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - Treat `/v1/models` as the current source of available model IDs and capability metadata.
 - `AdvertisedSizes` and `AdvertisedAspectRatios` are service-provided facts.
 - `SuggestedSizes` and `SuggestedAspectRatios` are unverified fallbacks and must be labeled as such.
+- Default to a model-advertised 2K-class size; if 2K is unavailable, use the best advertised 1K-class size.
+- Only attempt 4K/UHD/4096 after explicit user intent. If unavailable, list actual sizes and ask for explicit local-upscale approval before doing any local crop/upscale; never label a resized canvas as native 4K. For native edits, send the original image to `/v1/images/edits` with the selected size.
 - Use pixel `Size` for Images Generations and `AspectRatio` for Chat Completions. Reject incompatible parameters instead of silently ignoring them.
 - Verify the actual width and height of the saved result because chat output may not expose a fixed pixel contract.
 

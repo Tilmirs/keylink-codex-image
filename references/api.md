@@ -51,7 +51,7 @@ Text-only request:
 
 When an aspect ratio is supplied, the helper adds `extra_body.imageConfig.aspectRatio` and a matching system message for gateways that inspect either location.
 
-For an edit, the user content also contains an OpenAI-style image block:
+For an edit in Chat mode, the user content also contains an OpenAI-style image block. Images mode remains preferred for known image models and uses the service's multipart edit contract; use Chat mode only when the deployment documents that contract:
 
 ```json
 {
@@ -77,7 +77,28 @@ Endpoint: `POST /v1/images/generations`
 }
 ```
 
-The optional `quality`, `background`, `output_format`, and `response_format` fields are sent only when explicitly provided. This avoids rejecting requests for models that do not implement those options.
+Text-only Images requests use JSON on `/v1/images/generations`:
+
+```json
+{
+  "model": "MODEL_ID",
+  "prompt": "IMAGE_PROMPT",
+  "n": 1
+}
+```
+
+## Images-edits mode
+
+When a reference image is supplied in Images mode, the helper sends `POST /v1/images/edits` as `multipart/form-data`. The file is uploaded under the `image` field (not `input_image`):
+
+```text
+model=MODEL_ID
+prompt=Edit the supplied image ... User instruction: ...
+n=1
+image=<binary image file>
+```
+
+The optional `size`, `quality`, `background`, `output_format`, and `response_format` fields are added as multipart text fields only when explicitly supplied. Local files are read as bytes in memory, and remote/data URLs are downloaded or decoded before upload so the service receives an actual file part.
 
 ## Accepted response shapes
 
@@ -90,11 +111,16 @@ The helper saves the first image found in these forms:
 
 The script does not silently switch models or endpoints after an API error. Surface the service error so Codex can ask the user for a natural-language correction. If the host approval layer blocks filesystem or network access, explain the required permission and stop. Shell execution and credentials remain internal to the host.
 
+For a follow-up edit, pass the previously saved `OutputPath` as `--input-image-path`. For an uploaded attachment, pass its local path or an approved remote image URL. In Images mode the value is uploaded as the `image` multipart file to `/v1/images/edits`; in Chat mode it is sent as `image_url`. The helper adds an instruction to preserve unspecified content and requires an image payload in the response; it does not treat a text-only answer as a successful edit.
+
 ## Model and resolution discovery
 
 `GET /v1/models` may return model IDs, display names, capabilities, sizes, aspect ratios, or no image metadata at all. The discovery helper reports:
 
 - `AdvertisedSizes` and `AdvertisedAspectRatios`: values found in the response metadata.
+- `AdvertisedResolutionTiers`: advertised pixel sizes grouped as `OneK`, `TwoK`, or `FourK` using the long edge (`<1800`, `1800–3499`, and `>=3500`). These are classification aids, not a guarantee that every channel behind the model will accept every size.
 - `SuggestedSizes` and `SuggestedAspectRatios`: common candidates returned only when the service advertises no values; these are not claims of support.
+
+Resolution selection is policy-driven: use an advertised 2K-class size by default, and fall back to an advertised 1K-class size when 2K is unavailable. Only request an advertised 4K size when the user explicitly asks for 4K/UHD/4096. If 4K is not advertised, show the available sizes and ask for explicit approval before local upscaling; never describe a resized image as native 4K.
 
 For Chat Completions, prefer `--aspect-ratio` when the provider supports it. A requested pixel `--size` in the generations payload does not prove that chat will produce those exact dimensions. The helper rejects `--size` in chat mode and rejects `--aspect-ratio` in images mode instead of silently ignoring the user's selection. If the API does not publish resolution metadata, let the user choose from candidates or keep the model default and verify the returned image dimensions after generation.
