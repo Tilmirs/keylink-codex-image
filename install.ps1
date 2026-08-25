@@ -25,6 +25,9 @@ function Assert-KeylinkSkillFolder {
     $requiredPaths = @(
         'SKILL.md',
         'agents\openai.yaml',
+        'scripts\generate_image.js',
+        'scripts\keylink_common.js',
+        'scripts\list_image_models.js',
         'scripts\generate_image.ps1',
         'scripts\list_image_models.ps1',
         'scripts\read_ccswitch_credential.js',

@@ -22,7 +22,7 @@ macOS 自带 `curl`、`tar` 和 `bash`。在 Terminal 运行：
 curl -fsSL https://raw.githubusercontent.com/Tilmirs/keylink-codex-image/main/install.sh | bash
 ```
 
-脚本会下载仓库、验证 `SKILL.md` 和运行文件，再通过临时目录完成安装。已有版本会先备份到 `$HOME/.codex/skill-backups/keylink-image`（或 `$CODEX_HOME/skill-backups/keylink-image`），不会修改 secrets 或 CCSwitch 数据。
+脚本会下载仓库、验证 `SKILL.md` 和运行文件，再通过临时目录完成安装。生图运行时使用 Codex 提供的 Node.js，不需要安装 PowerShell、Homebrew 或取得管理员权限。已有版本会先备份到 `$HOME/.codex/skill-backups/keylink-image`（或 `$CODEX_HOME/skill-backups/keylink-image`），不会修改 secrets 或 CCSwitch 数据。
 
 ## 克隆仓库后本地安装或更新
 
@@ -111,8 +111,10 @@ keylink-image/
 |-- install.ps1                      一键安装和更新
 |-- install.sh                       macOS/Linux 一键安装和更新
 |-- agents/openai.yaml               Codex 展示信息
-|-- scripts/generate_image.ps1       生图、编辑和保存
-|-- scripts/list_image_models.ps1    模型与分辨率发现
+|-- scripts/generate_image.js        跨平台生图、编辑和保存（首选）
+|-- scripts/list_image_models.js     跨平台模型与分辨率发现（首选）
+|-- scripts/keylink_common.js        跨平台路由、凭据和请求公共逻辑
+|-- scripts/*.ps1                    Windows 旧版兼容入口
 |-- scripts/read_ccswitch_credential.js
 |-- scripts/configure_key.ps1
 |-- references/api.md
@@ -127,6 +129,7 @@ keylink-image/
 维护者发布前运行：
 
 ```powershell
+node .\tests\test_node_runtime.js
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_generate_image.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_list_image_models.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_install.ps1
@@ -135,6 +138,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test_install.ps1
 macOS/Linux 安装器测试：
 
 ```bash
+node ./tests/test_node_runtime.js
 bash ./tests/test_install.sh
 ```
 

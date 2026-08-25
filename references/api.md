@@ -2,7 +2,7 @@
 
 This skill treats Keylink as an OpenAI-compatible image service. Model IDs are pass-through values because the supported model catalog can change independently of the skill.
 
-Use `scripts/list_image_models.ps1` to query `/v1/models` before asking the user to choose among many models. Use `-UseCCSwitchCredential` for direct Keylink discovery or `-UseCodexRoute -NoAuth` to inspect the proxy's own catalog. Filtered results are evidence of image capability from a known ID or API metadata, not a guarantee that both endpoints work in the current deployment.
+Use `node scripts/list_image_models.js` to query `/v1/models` before asking the user to choose among many models. Use `--use-ccswitch-credential` for direct Keylink discovery or `--use-codex-route --no-auth` to inspect the proxy's own catalog. Filtered results are evidence of image capability from a known ID or API metadata, not a guarantee that both endpoints work in the current deployment.
 
 ## Authentication and base URL
 
@@ -12,22 +12,22 @@ Use `scripts/list_image_models.ps1` to query `/v1/models` before asking the user
 
 The helper accepts a base URL with or without a trailing `/v1`. It appends the correct route without duplicating `/v1`.
 
-Credential precedence is explicit `-ApiKey`, explicit `-ApiKeyFile`, then the current CCSwitch Codex provider when `-UseCCSwitchCredential` is present, then `KEYLINK_IMAGE_API_KEY`, `KEYLINK_API_KEY`, `KEYLINK_IMAGE_API_KEY_FILE`, `KEYLINK_API_KEY_FILE`, and `~/.codex/secrets/keylink-image-api-key.txt`. The CCSwitch database is opened read-only and the credential remains in memory. CCSwitch lookup fails closed unless both the current Codex provider's saved `base_url` and the request destination use the `keylinkclub.com` host; it never changes the explicit request model.
+Credential precedence is explicit `--api-key`, explicit `--api-key-file`, then the current CCSwitch Codex provider when `--use-ccswitch-credential` is present, then `KEYLINK_IMAGE_API_KEY`, `KEYLINK_API_KEY`, `KEYLINK_IMAGE_API_KEY_FILE`, `KEYLINK_API_KEY_FILE`, and `~/.codex/secrets/keylink-image-api-key.txt`. The CCSwitch database is opened read-only and the credential remains in memory. CCSwitch lookup fails closed unless both the current Codex provider's saved `base_url` and the request destination use the `keylinkclub.com` host; it never changes the explicit request model.
 
 ## Automatic routing
 
-`-Route auto` applies these rules:
+`--route auto` applies these rules:
 
 1. If no endpoint mode was explicitly supplied and the model is `gpt-image-2`, `gemini-3-pro-image`, `gemini-2.5-flash-image`, or `gemini-3.1-flash-image`, select `images` mode.
 2. Send all images-mode requests directly to Keylink.
 3. For chat mode, reuse the active Codex provider when `config.toml` declares one; otherwise call Keylink directly.
-4. Do not send a direct image API key to a loopback Codex route. `-UseCCSwitchCredential` is valid only for a direct Keylink request.
+4. Do not send a direct image API key to a loopback Codex route. `--use-ccswitch-credential` is valid only for a direct Keylink request.
 
-Use `-Route direct` or `-Route codex` to bypass automatic selection. An explicit `-Endpoint` has highest precedence.
+Use `--route direct` or `--route codex` to bypass automatic selection. An explicit `--endpoint` has highest precedence.
 
-For CCSwitch or another local router that manages Codex's active provider, `-UseCodexRoute` reads the selected provider and `base_url` from `~/.codex/config.toml` on every run. `-ProxyBaseUrl` has highest proxy-base precedence, followed by `KEYLINK_PROXY_BASE_URL`, then Codex configuration. This supports manually changed proxy hosts and ports without hardcoding them. If that loopback route accepts unauthenticated requests, pass `-NoAuth`.
+For CCSwitch or another local router that manages Codex's active provider, `--use-codex-route` reads the selected provider and `base_url` from `~/.codex/config.toml` on every run. `--proxy-base-url` has highest proxy-base precedence, followed by `KEYLINK_PROXY_BASE_URL`, then Codex configuration. This supports manually changed proxy hosts and ports without hardcoding them. If that loopback route accepts unauthenticated requests, pass `--no-auth`.
 
-Codex-oriented local routers may expose only `/v1/responses` and `/v1/chat/completions`. A successful chat request does not prove that `/v1/images/generations` is available. If the local router returns 404, use a direct Keylink base URL with a configured key or, after explicit user approval, `-UseCCSwitchCredential` to select `providers(app_type='codex', is_current=1).settings_config.auth.OPENAI_API_KEY` from CCSwitch.
+Codex-oriented local routers may expose only `/v1/responses` and `/v1/chat/completions`. A successful chat request does not prove that `/v1/images/generations` is available. If the local router returns 404, use a direct Keylink base URL with a configured key or, after explicit user approval, `--use-ccswitch-credential` to select `providers(app_type='codex', is_current=1).settings_config.auth.OPENAI_API_KEY` from CCSwitch.
 
 ## Chat-completions mode
 
@@ -97,4 +97,4 @@ The script does not silently switch models or endpoints after an API error. Surf
 - `AdvertisedSizes` and `AdvertisedAspectRatios`: values found in the response metadata.
 - `SuggestedSizes` and `SuggestedAspectRatios`: common candidates returned only when the service advertises no values; these are not claims of support.
 
-For Chat Completions, prefer `-AspectRatio` when the provider supports it. A requested pixel `Size` in the generations payload does not prove that chat will produce those exact dimensions. The helper rejects `-Size` in chat mode and rejects `-AspectRatio` in images mode instead of silently ignoring the user's selection. If the API does not publish resolution metadata, let the user choose from candidates or keep the model default and verify the returned image dimensions after generation.
+For Chat Completions, prefer `--aspect-ratio` when the provider supports it. A requested pixel `--size` in the generations payload does not prove that chat will produce those exact dimensions. The helper rejects `--size` in chat mode and rejects `--aspect-ratio` in images mode instead of silently ignoring the user's selection. If the API does not publish resolution metadata, let the user choose from candidates or keep the model default and verify the returned image dimensions after generation.

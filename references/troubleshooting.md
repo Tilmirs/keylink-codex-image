@@ -4,7 +4,11 @@ Use this guide after a request fails. Preserve the user's requested model and en
 
 ## Model and resolution selection
 
-The API key is only a credential; it does not contain a model catalog. Run `scripts/list_image_models.ps1` internally to query `/v1/models`. The helper filters likely image-capable models and returns capability evidence without exposing the key. If the response includes sizes or aspect ratios, they appear as advertised values. If it does not, the helper returns explicitly unverified suggestions. The model and resolution still require user selection when multiple choices are available; ask for that choice in natural language and translate it into script parameters internally.
+The API key is only a credential; it does not contain a model catalog. Run `node scripts/list_image_models.js` internally to query `/v1/models`. The helper filters likely image-capable models and returns capability evidence without exposing the key. If the response includes sizes or aspect ratios, they appear as advertised values. If it does not, the helper returns explicitly unverified suggestions. The model and resolution still require user selection when multiple choices are available; ask for that choice in natural language and translate it into script parameters internally.
+
+## macOS or Linux reports missing PowerShell
+
+Do not install PowerShell. Use the Node.js helpers shipped with the skill. Codex supplies the Node runtime; locate its executable through the workspace dependency runtime when `node` is not already on `PATH`. The `.ps1` files are Windows compatibility entrypoints only.
 
 After generation, inspect the saved file's actual width and height. For Chat Completions, the requested aspect ratio may be honored without the response exposing a fixed pixel-size contract.
 
@@ -14,7 +18,7 @@ Symptom: `/v1/chat/completions` returns HTTP 400 or reports that an image model 
 
 Cause: availability on `/v1/images/generations` does not imply chat-completions support. In the observed setup, `gpt-image-2` was rejected by chat.
 
-Action: omit `-EndpointMode` for a known image model or pass `-EndpointMode images`. Use explicit `chat` only when the user requests it or the deployment documents that model on chat.
+Action: omit `--endpoint-mode` for a known image model or pass `--endpoint-mode images`. Use explicit `chat` only when the user requests it or the deployment documents that model on chat.
 
 ## Local proxy returns 404 for generations
 
@@ -22,21 +26,21 @@ Symptom: chat works through CCSwitch, but `/v1/images/generations` on the same p
 
 Cause: a Codex-oriented proxy may expose `/v1/responses` and `/v1/chat/completions` without implementing the images route. A working chat request is not an images-route health check.
 
-Action: use `-Route direct` for generations. Resolve a direct credential from a private key file, environment variable, or the explicitly approved `-UseCCSwitchCredential` flow. Never send that credential to the loopback proxy.
+Action: use `--route direct` for generations. Resolve a direct credential from a private key file, environment variable, or the explicitly approved `--use-ccswitch-credential` flow. Never send that credential to the loopback proxy.
 
 ## Proxy address was changed manually
 
 The proxy host and port are not fixed. Resolution order is:
 
-1. `-ProxyBaseUrl`
+1. `--proxy-base-url`
 2. `KEYLINK_PROXY_BASE_URL`
 3. The active Codex provider's `base_url` in `config.toml`, read on every run
 
-Use `-DryRun` to confirm the complete endpoint before a live request. `-BaseUrl` and `KEYLINK_BASE_URL` control direct Keylink routing, not the proxy.
+Use `--dry-run` to confirm the complete endpoint before a live request. `--base-url` and `KEYLINK_BASE_URL` control direct Keylink routing, not the proxy.
 
 ## CCSwitch credential access
 
-`-UseCCSwitchCredential` requires approval to read the local CCSwitch database. It selects only the current `codex` provider, verifies that the provider and destination hosts are `keylinkclub.com`, and keeps the credential in memory. It does not reuse CCSwitch's current text model; `-Model` remains authoritative.
+`--use-ccswitch-credential` requires approval to read the local CCSwitch database. It selects only the current `codex` provider, verifies that the provider and destination hosts are `keylinkclub.com`, and keeps the credential in memory. It does not reuse CCSwitch's current text model; `--model` remains authoritative.
 
 If CCSwitch is installed in a non-default location, set `CCSWITCH_DB_PATH`. If the current provider is not Keylink, switch CCSwitch to the Keylink Codex provider or use `scripts/configure_key.ps1`; do not use another provider's key.
 

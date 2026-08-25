@@ -40,7 +40,8 @@ try {
     $destination = Join-Path $codexHome 'skills\keylink-image'
     Assert-True ($first.Destination -eq [IO.Path]::GetFullPath($destination)) 'first install destination'
     Assert-True (Test-Path -LiteralPath (Join-Path $destination 'SKILL.md') -PathType Leaf) 'SKILL.md installed'
-    Assert-True (Test-Path -LiteralPath (Join-Path $destination 'scripts\generate_image.ps1') -PathType Leaf) 'generator installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $destination 'scripts\generate_image.js') -PathType Leaf) 'cross-platform generator installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $destination 'scripts\generate_image.ps1') -PathType Leaf) 'PowerShell generator installed'
     Assert-True (-not $first.BackupPath) 'first install does not create a backup'
 
     $installedMarker = Join-Path $destination 'old-version-marker.txt'

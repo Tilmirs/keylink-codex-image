@@ -46,6 +46,7 @@ printf 'do-not-change' > "$external_sentinel"
 
 bash "$installer" --source "$repo_root"
 assert_file "$destination/SKILL.md"
+assert_file "$destination/scripts/generate_image.js"
 assert_file "$destination/scripts/generate_image.ps1"
 
 printf 'old-version' > "$destination/old-version-marker.txt"
@@ -90,6 +91,7 @@ CODEX_HOME="$remote_codex_home" \
 KEYLINK_IMAGE_SKILL_ARCHIVE_URL="$archive_url" \
 bash -s < "$installer"
 assert_file "$remote_codex_home/skills/keylink-image/SKILL.md"
+assert_file "$remote_codex_home/skills/keylink-image/scripts/generate_image.js"
 assert_file "$remote_codex_home/skills/keylink-image/scripts/generate_image.ps1"
 
 printf 'All Keylink macOS/Linux installer tests passed.\n'

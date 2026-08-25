@@ -16,8 +16,10 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 | --- | --- |
 | `SKILL.md` | Runtime instructions, routing policy, credential rules, and agent-only command examples. |
 | `agents/openai.yaml` | Codex display metadata and default invocation prompt. |
-| `scripts/generate_image.ps1` | Deterministic Chat Completions and Images Generations requests, response extraction, and output saving. |
-| `scripts/list_image_models.ps1` | `/v1/models` discovery and advertised-versus-suggested resolution reporting. |
+| `scripts/generate_image.js` | Cross-platform deterministic Chat Completions and Images Generations requests, response extraction, and output saving. |
+| `scripts/list_image_models.js` | Cross-platform `/v1/models` discovery and advertised-versus-suggested resolution reporting. |
+| `scripts/keylink_common.js` | Shared route, credential, endpoint, and HTTP behavior. |
+| `scripts/*.ps1` | Compatibility entrypoints for existing Windows users; not a Unix dependency. |
 | `scripts/read_ccswitch_credential.js` | Read-only lookup of the active CCSwitch Codex provider credential. |
 | `scripts/configure_key.ps1` | Hidden-input setup for a separate Keylink credential file. |
 | `references/api.md` | Request/response contract and endpoint details. |
@@ -33,7 +35,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - Do not document a nonexistent `codex skills install` shell subcommand. Verify current behavior against the official Codex Skills documentation before changing installation instructions.
 - The built-in installer is for first installation and stops when the destination exists. Keep `install.ps1` and `install.sh` documented as repeatable local installation and update paths.
 - Keep the macOS Terminal one-liner pinned to the raw `install.sh` on this repository's `main` branch. The script must validate the downloaded package before replacing an installation.
-- Keep `install.sh` compatible with the Bash 3.2 version shipped by older macOS releases. Do not require Homebrew, GNU-only flags, Python, Node.js, or `realpath`.
+- Keep `install.sh` compatible with the Bash 3.2 version shipped by older macOS releases. Do not require Homebrew, GNU-only flags, Python, or `realpath`; runtime Node.js is supplied by Codex and is not invoked by the installer.
 - Windows and Unix installers must install the same runtime files, preserve secrets and unrelated directories, stage replacements, and back up an existing version before updating.
 
 ## Skill selection and provider preference
@@ -78,9 +80,9 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 
 ## Where to make common changes
 
-- Add or remove an auto-routed model in `scripts/generate_image.ps1`, then update `SKILL.md`, `references/api.md`, and the routing tests together.
-- Adapt request fields or response extraction in `scripts/generate_image.ps1` and document the contract in `references/api.md`.
-- Adapt model metadata parsing in `scripts/list_image_models.ps1` and add a representative mocked `/v1/models` response.
+- Add or remove an auto-routed model in both `scripts/generate_image.js` and the compatibility PowerShell helper, then update `SKILL.md`, `references/api.md`, and routing tests together.
+- Adapt request fields or response extraction in the Node helper first, keep the PowerShell compatibility helper aligned, and document the contract in `references/api.md`.
+- Adapt model metadata parsing in `scripts/list_image_models.js`, keep the compatibility helper aligned, and add a representative mocked `/v1/models` response.
 - Add failure guidance to `references/troubleshooting.md` only after the behavior has been observed or documented.
 - Keep `README.md` user-facing. Put agent execution rules in `SKILL.md` and maintenance invariants in this file.
 
@@ -98,6 +100,7 @@ python "$env:USERPROFILE\.codex\skills\.system\skill-creator\scripts\quick_valid
 On macOS/Linux, also run:
 
 ```bash
+node ./tests/test_node_runtime.js
 bash ./tests/test_install.sh
 python3 "$HOME/.codex/skills/.system/skill-creator/scripts/quick_validate.py" .
 ```
