@@ -626,10 +626,6 @@ if ($NoAuth -and ($ApiKey -or $ApiKeyFile -or $UseCCSwitchCredential)) {
 $endpointModeWasExplicit = $PSBoundParameters.ContainsKey('EndpointMode')
 $knownImageModels = @(
     'gpt-image-2',
-    'gpt-image-2-openai',
-    'gpt-image-2-2k',
-    'gpt-image-2-pro',
-    'gpt-image-2-4k',
     'gemini-3-pro-image',
     'gemini-2.5-flash-image',
     'gemini-3.1-flash-image'

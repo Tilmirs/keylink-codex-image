@@ -56,6 +56,7 @@ const server = http.createServer((request, response) => {
   if (request.url === '/v1/models') return response.end(JSON.stringify({ data: [
     { id: 'text-only' },
     { id: 'gpt-image-2', display_name: 'GPT Image 2', sizes: ['1024x1024'], aspect_ratios: ['1:1'], optional: { width: null, height: null } },
+    { id: 'gemini-3-pro-image', display_name: 'Gemini 3 Pro Image' },
   ] }));
   if (request.url === '/v1/images/generations' || request.url === '/v1/images/edits') {
     const chunks = [];
@@ -117,10 +118,13 @@ const server = http.createServer((request, response) => {
   fs.writeFileSync(input, Buffer.from(tinyPng, 'base64'));
   try {
     const models = await run('list_image_models.js', ['--base-url', base], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
-    assert.equal(models.FilteredModelCount, 1);
-    assert.deepEqual(models.Models[0].AdvertisedSizes, ['1024x1024']);
-    assert.deepEqual(models.Models[0].AdvertisedResolutionTiers.OneK, ['1024x1024']);
-    assert.ok(!models.Models[0].SuggestedSizes.includes('2048x2048'), 'unadvertised 2K is not suggested as a default');
+    assert.equal(models.FilteredModelCount, 2);
+    const gptModel = models.Models.find((model) => model.Id === 'gpt-image-2');
+    const geminiModel = models.Models.find((model) => model.Id === 'gemini-3-pro-image');
+    assert.deepEqual(gptModel.AdvertisedSizes, ['1024x1024']);
+    assert.deepEqual(gptModel.AdvertisedResolutionTiers.OneK, ['1024x1024']);
+    assert.ok(!gptModel.SuggestedSizes.includes('2048x2048'), 'unadvertised 2K is not suggested as a default');
+    assert.deepEqual(geminiModel.SuggestedSizes, ['1024x1024', '1536x1024', '1024x1536'], 'Gemini uses the same conservative defaults');
     await assert.rejects(
       run('generate_image.js', ['--prompt', 'test', '--model', 'gpt-image-2', '--szie', '1024x1024', '--dry-run'], {}),
       /Unknown option: --szie/

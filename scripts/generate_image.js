@@ -6,11 +6,9 @@ const path = require('node:path');
 const common = require('./keylink_common');
 
 // These are routing hints only.  The service catalog remains authoritative for
-// actual availability and resolution support.  The GPT aliases are included so
-// an explicitly selected, service-documented variant still uses Images rather
-// than silently falling back to Chat.
+// actual availability and resolution support.
 const knownImageModels = new Set([
-  'gpt-image-2', 'gpt-image-2-openai', 'gpt-image-2-2k', 'gpt-image-2-pro', 'gpt-image-2-4k',
+  'gpt-image-2',
   'gemini-3-pro-image', 'gemini-2.5-flash-image', 'gemini-3.1-flash-image',
 ]);
 const conservativeSizes = {
@@ -25,7 +23,7 @@ function fail(message) { throw new Error(message); }
 
 function isKnownImageModel(model) {
   const normalized = String(model || '').toLowerCase();
-  return knownImageModels.has(normalized) || /^gpt-image-2-(?:2k|pro|4k)$/i.test(normalized);
+  return knownImageModels.has(normalized);
 }
 
 function parseSize(size) {
