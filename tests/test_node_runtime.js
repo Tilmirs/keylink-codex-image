@@ -65,12 +65,15 @@ const server = http.createServer((request, response) => {
       if (request.url.endsWith('/edits')) {
         const form = parseMultipart(body, request.headers['content-type']);
         assert.equal(form.fields.model, 'gpt-image-2');
-        assert.match(form.fields.prompt, /Change only the cell membrane/);
         assert.match(form.fields.prompt, /Preserve all content/);
         assert.equal(form.fields.n, '1');
         assert.equal(form.files.image.contentType, 'image/png');
         assert.ok(form.files.image.bytes.equals(Buffer.from(tinyPng, 'base64')));
         requests.push({ path: request.url, form });
+        if (form.fields.prompt.includes('Trigger Images Edits fallback')) {
+          response.statusCode = 404;
+          return response.end(JSON.stringify({ error: { message: 'Images Edits endpoint is not supported' } }));
+        }
       } else {
         const payload = JSON.parse(body.toString('utf8'));
         assert.equal(payload.model, 'gpt-image-2');
@@ -131,6 +134,19 @@ const server = http.createServer((request, response) => {
     assert.ok(fs.statSync(editedOutput).size > 0);
     const editRequest = requests.find((request) => request.path === '/v1/images/edits');
     assert.ok(editRequest, 'multipart image edit request was received');
+    const fallbackStart = requests.length;
+    const fallback = await run('generate_image.js', [
+      '--prompt', 'Trigger Images Edits fallback: change only the cell membrane.', '--model', 'gpt-image-2',
+      '--input-image-path', input, '--size', '1024x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'fallback-chat.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(fallback.EndpointMode, 'chat');
+    assert.equal(fallback.FallbackFromEndpoint, `${base}/v1/images/edits`);
+    assert.match(fallback.FallbackReason, /HTTP 404/);
+    assert.equal(requests[fallbackStart].path, '/v1/images/edits');
+    assert.equal(requests[fallbackStart + 1].messages[0].role, 'system');
+    assert.match(requests[fallbackStart + 1].messages[0].content, /Preserve all content/);
+    assert.equal(requests[fallbackStart + 1].extra_body.imageConfig.aspectRatio, '1:1');
     const explicitChat = await run('generate_image.js', [
       '--prompt', 'Change only the cell membrane to translucent silver.', '--model', 'gpt-image-2', '--endpoint-mode', 'chat',
       '--input-image-path', input, '--base-url', base, '--output-path', path.join(temp, 'edited-chat.png'),

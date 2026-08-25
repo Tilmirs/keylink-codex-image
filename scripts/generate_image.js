@@ -94,6 +94,41 @@ function buildImagesEditForm(reference, args, prompt) {
   return form;
 }
 
+function gcd(a, b) {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
+function aspectRatioFromSize(size) {
+  const match = String(size || '').match(/^(\d+)x(\d+)$/);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const divisor = gcd(width, height);
+  return `${width / divisor}:${height / divisor}`;
+}
+
+function buildChatPayload(args, inputImageValue, hasInputImage) {
+  const aspectRatio = args.aspectRatio || aspectRatioFromSize(args.size);
+  const content = [{ type: 'text', text: args.prompt }];
+  if (inputImageValue) content.push({ type: 'image_url', image_url: { url: inputImageValue } });
+  const messages = [];
+  if (hasInputImage) messages.push({ role: 'system', content: editInstruction });
+  if (aspectRatio) messages.push({ role: 'system', content: JSON.stringify({ imageConfig: { aspectRatio } }) });
+  messages.push({ role: 'user', content });
+  const payload = { model: args.model, messages };
+  if (aspectRatio) payload.extra_body = { imageConfig: { aspectRatio } };
+  return payload;
+}
+
+function isImagesEditFallbackError(error) {
+  const status = Number(error?.status);
+  const details = `${error?.responseBody || ''} ${error?.message || ''}`.toLowerCase();
+  if ([404, 405, 415, 501].includes(status)) return true;
+  if (![400, 422].includes(status)) return false;
+  return /(unsupported|not supported|not implemented|endpoint|image\s*edit|images\/edits|multipart|image is required|input_image|method not allowed)/i.test(details);
+}
+
 async function main() {
   const args = common.parseArgs(process.argv.slice(2));
   common.validateArgs(args, [
@@ -149,14 +184,7 @@ async function main() {
   }
 
   if (mode === 'chat') {
-    const content = [{ type: 'text', text: args.prompt }];
-    if (inputImageValue) content.push({ type: 'image_url', image_url: { url: inputImageValue } });
-    const messages = [];
-    if (hasInputImage) messages.push({ role: 'system', content: editInstruction });
-    if (args.aspectRatio) messages.push({ role: 'system', content: JSON.stringify({ imageConfig: { aspectRatio: args.aspectRatio } }) });
-    messages.push({ role: 'user', content });
-    payload = { model: args.model, messages };
-    if (args.aspectRatio) payload.extra_body = { imageConfig: { aspectRatio: args.aspectRatio } };
+    payload = buildChatPayload(args, inputImageValue, hasInputImage);
   } else if (hasInputImage) {
     payload = { model: args.model, prompt: `${editInstruction}\nUser instruction: ${args.prompt}`, n: 1 };
     for (const [arg, field] of [['size', 'size'], ['quality', 'quality'], ['background', 'background'], ['outputFormat', 'output_format'], ['responseFormat', 'response_format']]) if (args[arg]) payload[field] = args[arg];
@@ -186,7 +214,33 @@ async function main() {
     headers['content-type'] = 'application/json; charset=utf-8';
     body = JSON.stringify(payload);
   }
-  const response = await common.fetchJson(resolvedEndpoint, { method: 'POST', headers, body }, timeoutSec, key, 'Keylink request failed');
+  const canAutoChatFallback = mode === 'images' && hasInputImage && args.endpointMode === undefined && !args.endpoint;
+  let activeMode = mode;
+  let activeEndpoint = resolvedEndpoint;
+  let activePayload = payload;
+  let fallbackFromEndpoint;
+  let fallbackReason;
+  let response;
+  try {
+    response = await common.fetchJson(activeEndpoint, { method: 'POST', headers, body }, timeoutSec, key, 'Keylink request failed');
+  } catch (imagesError) {
+    if (!canAutoChatFallback || !isImagesEditFallbackError(imagesError)) throw imagesError;
+    fallbackFromEndpoint = activeEndpoint;
+    fallbackReason = `Images Edits returned HTTP ${imagesError.status}`;
+    activeMode = 'chat';
+    activeEndpoint = common.endpoint(base, 'chat/completions');
+    activePayload = buildChatPayload(args, inputImageValue, hasInputImage);
+    const fallbackHeaders = {};
+    if (key) fallbackHeaders.authorization = `Bearer ${key}`;
+    fallbackHeaders['content-type'] = 'application/json; charset=utf-8';
+    try {
+      response = await common.fetchJson(activeEndpoint, {
+        method: 'POST', headers: fallbackHeaders, body: JSON.stringify(activePayload),
+      }, timeoutSec, key, 'Keylink Chat fallback failed');
+    } catch (chatError) {
+      fail(`${imagesError.message}; Chat fallback failed: ${chatError.message}`);
+    }
+  }
   const image = imagePayload(response, key);
   const extension = String(args.outputFormat || 'png').replace(/^\./, '');
   const output = path.resolve(args.outputPath || `keylink-image-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)}.${extension}`);
@@ -195,7 +249,7 @@ async function main() {
   if (image.kind === 'base64') fs.writeFileSync(output, Buffer.from(image.value.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
   else {
     const downloadHeaders = {};
-    if (key && new URL(image.value).host === new URL(resolvedEndpoint).host) downloadHeaders.authorization = `Bearer ${key}`;
+    if (key && new URL(image.value).host === new URL(activeEndpoint).host) downloadHeaders.authorization = `Bearer ${key}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
     try {
@@ -206,7 +260,11 @@ async function main() {
   }
   const bytes = fs.statSync(output).size;
   if (!bytes) fail(`The saved image is empty: ${output}`);
-  console.log(JSON.stringify({ OutputPath: output, NextEditInputPath: output, Bytes: bytes, Operation: hasInputImage ? 'edit' : 'generate', Model: args.model, EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint }, null, 2));
+  console.log(JSON.stringify({
+    OutputPath: output, NextEditInputPath: output, Bytes: bytes, Operation: hasInputImage ? 'edit' : 'generate',
+    Model: args.model, EndpointMode: activeMode, Route: route, Endpoint: activeEndpoint,
+    FallbackFromEndpoint: fallbackFromEndpoint, FallbackReason: fallbackReason,
+  }, null, 2));
 }
 
 main().catch((error) => { console.error(error.message); process.exitCode = 1; });

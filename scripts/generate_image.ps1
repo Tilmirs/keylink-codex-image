@@ -455,6 +455,66 @@ function Find-ImagePayload {
     throw 'The API response did not contain a supported image payload.'
 }
 
+function Get-AspectRatioFromSize {
+    param([string]$Size)
+
+    if ($Size -notmatch '^(?<width>\d+)x(?<height>\d+)$') {
+        return $null
+    }
+    $width = [int]$Matches['width']
+    $height = [int]$Matches['height']
+    while ($height -ne 0) {
+        $remainder = $width % $height
+        $width = $height
+        $height = $remainder
+    }
+    return "{0}:{1}" -f ([int]$Matches['width'] / $width), ([int]$Matches['height'] / $width)
+}
+
+function New-ChatPayload {
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter(Mandatory)][string]$Model,
+        [string]$InputImageUrl,
+        [string]$InputImagePath,
+        [string]$AspectRatio,
+        [string]$Size
+    )
+
+    $effectiveAspectRatio = Get-FirstNonEmptyValue @($AspectRatio, (Get-AspectRatioFromSize $Size))
+    $content = @([ordered]@{ type = 'text'; text = $Prompt })
+    if ($InputImageUrl) {
+        $content += [ordered]@{ type = 'image_url'; image_url = [ordered]@{ url = $InputImageUrl } }
+    }
+    elseif ($InputImagePath) {
+        $content += [ordered]@{ type = 'image_url'; image_url = [ordered]@{ url = (Get-LocalImageDataUrl -Path $InputImagePath) } }
+    }
+
+    $messages = @([ordered]@{
+        role = 'system'
+        content = 'Edit the supplied image according to the user instruction. Preserve all content the user did not ask to change. Return the edited image itself, not a description or instructions.'
+    })
+    if ($effectiveAspectRatio) {
+        $imageConfiguration = [ordered]@{ imageConfig = [ordered]@{ aspectRatio = $effectiveAspectRatio } }
+        $messages += [ordered]@{ role = 'system'; content = ($imageConfiguration | ConvertTo-Json -Depth 5 -Compress) }
+    }
+    $messages += [ordered]@{ role = 'user'; content = $content }
+    $payload = [ordered]@{ model = $Model; messages = $messages }
+    if ($effectiveAspectRatio) { $payload['extra_body'] = $imageConfiguration }
+    return $payload
+}
+
+function Test-ImagesEditFallbackError {
+    param(
+        [Nullable[int]]$StatusCode,
+        [string]$Details
+    )
+
+    if ($StatusCode -in @(404, 405, 415, 501)) { return $true }
+    if ($StatusCode -notin @(400, 422)) { return $false }
+    return $Details -match '(?i)(unsupported|not supported|not implemented|endpoint|image\s*edit|images/edits|multipart|image is required|input_image|method not allowed)'
+}
+
 function ConvertFrom-FlexibleBase64 {
     param([Parameter(Mandatory)][string]$Value)
 
@@ -645,6 +705,14 @@ if ($apiKey) {
     $headers.Authorization = "Bearer $apiKey"
 }
 $hasInputImage = [bool]($InputImageUrl -or $InputImagePath)
+$canAutoChatFallback = $EndpointMode -eq 'images' -and $hasInputImage -and -not $endpointModeWasExplicit -and -not $Endpoint
+$activeMode = $EndpointMode
+$activeEndpoint = $resolvedEndpoint
+$activePayload = $payload
+$fallbackFromEndpoint = $null
+$fallbackReason = $null
+$requestStatus = $null
+$requestErrorText = $null
 $response = $null
 
 try {
@@ -674,7 +742,11 @@ try {
         try {
             $httpResponse = $client.SendAsync($request).GetAwaiter().GetResult()
             $responseText = $httpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-            if (-not $httpResponse.IsSuccessStatusCode) { throw "HTTP $([int]$httpResponse.StatusCode): $responseText" }
+            if (-not $httpResponse.IsSuccessStatusCode) {
+                $requestStatus = [int]$httpResponse.StatusCode
+                $requestErrorText = $responseText
+                throw "HTTP $requestStatus`: $responseText"
+            }
             $response = $responseText | ConvertFrom-Json
         }
         finally {
@@ -701,10 +773,42 @@ catch {
         (Get-ObjectProperty $exception 'Message'),
         [string]$_
     )
-    if ($apiKey) {
-        $details = $details.Replace($apiKey, '<redacted>')
+    if (-not $requestErrorText) { $requestErrorText = $details }
+    if ($canAutoChatFallback -and (Test-ImagesEditFallbackError -StatusCode $requestStatus -Details $requestErrorText)) {
+        $fallbackFromEndpoint = $activeEndpoint
+        $fallbackReason = "Images Edits returned HTTP $requestStatus"
+        $activeMode = 'chat'
+        $activeEndpoint = Resolve-KeylinkEndpoint $null $resolvedBaseUrl 'chat'
+        $activePayload = New-ChatPayload -Prompt $Prompt -Model $Model -InputImageUrl $InputImageUrl -InputImagePath $InputImagePath -AspectRatio $AspectRatio -Size $Size
+        $fallbackHeaders = @{}
+        if ($apiKey) { $fallbackHeaders.Authorization = "Bearer $apiKey" }
+        try {
+            $fallbackJson = $activePayload | ConvertTo-Json -Depth 20 -Compress
+            $response = Invoke-RestMethod `
+                -Uri $activeEndpoint `
+                -Method Post `
+                -Headers $fallbackHeaders `
+                -ContentType 'application/json; charset=utf-8' `
+                -Body ([Text.Encoding]::UTF8.GetBytes($fallbackJson)) `
+                -TimeoutSec $TimeoutSec
+        }
+        catch {
+            $fallbackErrorDetails = Get-ObjectProperty $_ 'ErrorDetails'
+            $fallbackException = Get-ObjectProperty $_ 'Exception'
+            $fallbackDetails = Get-FirstNonEmptyValue @(
+                (Get-ObjectProperty $fallbackErrorDetails 'Message'),
+                (Get-ObjectProperty $fallbackException 'Message'),
+                [string]$_
+            )
+            if ($apiKey) { $fallbackDetails = $fallbackDetails.Replace($apiKey, '<redacted>') }
+            if ($apiKey) { $details = $details.Replace($apiKey, '<redacted>') }
+            throw "Keylink request failed: Images Edits failed ($details); Chat fallback failed ($fallbackDetails)"
+        }
     }
-    throw "Keylink request failed: $details"
+    else {
+        if ($apiKey) { $details = $details.Replace($apiKey, '<redacted>') }
+        throw "Keylink request failed: $details"
+    }
 }
 
 try {
@@ -728,7 +832,7 @@ if ($imagePayload.Kind -eq 'base64') {
 }
 else {
     $downloadHeaders = @{}
-    if ($apiKey -and ([Uri]$imagePayload.Value).Host -eq ([Uri]$resolvedEndpoint).Host) {
+    if ($apiKey -and ([Uri]$imagePayload.Value).Host -eq ([Uri]$activeEndpoint).Host) {
         $downloadHeaders.Authorization = "Bearer $apiKey"
     }
     Invoke-WebRequest `
@@ -750,7 +854,9 @@ if ($savedFile.Length -eq 0) {
     Bytes = $savedFile.Length
     Operation = if ($InputImageUrl -or $InputImagePath) { 'edit' } else { 'generate' }
     Model = $Model
-    EndpointMode = $EndpointMode
+    EndpointMode = $activeMode
     Route = $effectiveRoute
-    Endpoint = $resolvedEndpoint
+    Endpoint = $activeEndpoint
+    FallbackFromEndpoint = $fallbackFromEndpoint
+    FallbackReason = $fallbackReason
 } | ConvertTo-Json -Depth 5

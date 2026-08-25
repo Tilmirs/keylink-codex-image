@@ -1,6 +1,6 @@
 # Keylink Image Troubleshooting
 
-Use this guide after a request fails. Preserve the user's requested model and endpoint; do not silently retry a different model or route.
+Use this guide after a request fails. Preserve the user's requested model. Implicit known-model reference edits may make one Chat retry after an Images Edits capability error; explicit endpoint selections and non-capability errors are not retried.
 
 ## Model and resolution selection
 
@@ -20,7 +20,7 @@ After generation, inspect the saved file's actual width and height. For Chat Com
 
 ## Follow-up edit or uploaded image
 
-When the user asks to change part of an image generated earlier, reuse that generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. Known image models use `/v1/images/edits` and upload the bytes as the multipart `image` field; explicit Chat mode uses `image_url`. If an edit returns `image is required`, inspect the request content type and field name first—JSON `input_image` is not a file upload for this endpoint. Surface any remaining service error and let the user choose an explicitly supported alternate endpoint.
+When the user asks to change part of an image generated earlier, reuse that generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. Known image models first use `/v1/images/edits` and upload the bytes as the multipart `image` field; explicit Chat mode uses `image_url`. If an implicit Images Edits request returns an endpoint/capability error such as `image is required`, the helper may make one Chat retry with the same image; JSON `input_image` is not a file upload for Images Edits. Surface both errors if the fallback also fails.
 
 If an edit appears to regenerate from the text prompt, inspect the command before diagnosing the model: confirm that `--input-image-path` equals the immediately preceding successful result's `NextEditInputPath`. A visually similar or older filename is not sufficient.
 

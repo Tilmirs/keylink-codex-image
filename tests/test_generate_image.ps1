@@ -26,6 +26,7 @@ $portFile = Join-Path $tempRoot 'port.txt'
 $chatOutput = Join-Path $tempRoot 'chat.png'
 $imagesOutput = Join-Path $tempRoot 'images.png'
 $editOutput = Join-Path $tempRoot 'edited.png'
+$fallbackOutput = Join-Path $tempRoot 'fallback-chat.png'
 $editInput = Join-Path $tempRoot 'uploaded image.png'
 $ccswitchDatabase = Join-Path $tempRoot 'cc-switch.db'
 $serverJob = $null
@@ -59,7 +60,7 @@ try {
         }
 
         try {
-            for ($index = 0; $index -lt 3; $index++) {
+            for ($index = 0; $index -lt 5; $index++) {
                 $client = $listener.AcceptTcpClient()
                 try {
                     $stream = $client.GetStream()
@@ -91,7 +92,12 @@ try {
                     $requestLine = ($headerText -split "`r?`n")[0]
                     $path = ($requestLine -split ' ')[1]
 
-                    if ($path -eq '/v1/chat/completions') {
+                    $statusCode = 200
+                    if ($path -eq '/v1/images/edits' -and $body -match 'Trigger Images Edits fallback') {
+                        $statusCode = 404
+                        $responseBody = '{"error":{"message":"Images Edits endpoint is not supported"}}'
+                    }
+                    elseif ($path -eq '/v1/chat/completions') {
                         $responseBody = '{"choices":[{"message":{"content":"![image](data:image/png;base64,' + $pngBase64 + ')"}}]}'
                     }
                     else {
@@ -99,7 +105,8 @@ try {
                     }
 
                     $bodyBytes = [Text.Encoding]::UTF8.GetBytes($responseBody)
-                    $header = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+                    $statusText = if ($statusCode -eq 200) { 'OK' } else { 'Not Found' }
+                    $header = "HTTP/1.1 $statusCode $statusText`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
                     $headerBytes = [Text.Encoding]::ASCII.GetBytes($header)
                     $stream.Write($headerBytes, 0, $headerBytes.Length)
                     $stream.Write($bodyBytes, 0, $bodyBytes.Length)
@@ -285,12 +292,26 @@ base_url = "http://127.0.0.1:9/v1"
         -ApiKey 'ccswitch-test-key' `
         -OutputPath $editOutput | ConvertFrom-Json
 
+    $fallbackResult = & $Generator `
+        -Prompt 'Trigger Images Edits fallback: change only the membrane.' `
+        -Model 'gpt-image-2' `
+        -InputImagePath $editInput `
+        -Route auto `
+        -BaseUrl "http://127.0.0.1:$port/v1" `
+        -ApiKey 'ccswitch-test-key' `
+        -Size '1024x1024' `
+        -OutputPath $fallbackOutput | ConvertFrom-Json
+
     Wait-Job -Job $serverJob -Timeout 10 | Out-Null
     $requests = @(Receive-Job -Job $serverJob)
 
     Assert-True ($chatResult.EndpointMode -eq 'chat') 'chat result mode'
     Assert-True ($imagesResult.EndpointMode -eq 'images') 'images result mode'
     Assert-True ($editResult.EndpointMode -eq 'images') 'edit result mode'
+    Assert-True ($fallbackResult.EndpointMode -eq 'chat') 'Images Edits fallback result mode'
+    Assert-True ($fallbackResult.Endpoint -eq "http://127.0.0.1:$port/v1/chat/completions") 'Images Edits fallback endpoint'
+    Assert-True ($fallbackResult.FallbackFromEndpoint -eq "http://127.0.0.1:$port/v1/images/edits") 'Images Edits fallback source endpoint'
+    Assert-True ($fallbackResult.FallbackReason -match 'HTTP 404') 'Images Edits fallback reason'
     Assert-True ($chatResult.NextEditInputPath -eq $chatOutput) 'chat result exposes next edit input path'
     Assert-True ($imagesResult.NextEditInputPath -eq $imagesOutput) 'images result exposes next edit input path'
     Assert-True ($editResult.NextEditInputPath -eq $editOutput) 'edit result exposes next edit input path'
@@ -299,10 +320,13 @@ base_url = "http://127.0.0.1:9/v1"
     Assert-True ((Get-Item -LiteralPath $chatOutput).Length -gt 8) 'chat image was written'
     Assert-True ((Get-Item -LiteralPath $imagesOutput).Length -gt 8) 'images response was written'
     Assert-True ((Get-Item -LiteralPath $editOutput).Length -gt 8) 'edited response was written'
-    Assert-True ($requests.Count -eq 3) 'mock server received three requests'
+    Assert-True ((Get-Item -LiteralPath $fallbackOutput).Length -gt 8) 'fallback response was written'
+    Assert-True ($requests.Count -eq 5) 'mock server received five requests'
     Assert-True ($requests[0].Path -eq '/v1/chat/completions') 'chat request path'
     Assert-True ($requests[1].Path -eq '/v1/images/generations') 'images request path'
     Assert-True ($requests[2].Path -eq '/v1/images/edits') 'images edit request path'
+    Assert-True ($requests[3].Path -eq '/v1/images/edits') 'fallback first request path'
+    Assert-True ($requests[4].Path -eq '/v1/chat/completions') 'fallback chat request path'
     Assert-True ($null -eq $requests[0].Authorization) 'chat request omits authorization in no-auth mode'
     Assert-True ($requests[1].Authorization -eq 'Bearer ccswitch-test-key') 'current CCSwitch provider authorization header'
 
@@ -314,6 +338,9 @@ base_url = "http://127.0.0.1:9/v1"
     Assert-True ($imagesBody.size -eq '1536x1024') 'images size payload'
     Assert-True ($requests[2].Body -match '(?i)(image|filename)') 'images edit multipart includes image field'
     Assert-True ($requests[2].Body -match '(?i)prompt') 'images edit multipart includes prompt field'
+    $fallbackChatBody = $requests[4].Body | ConvertFrom-Json
+    Assert-True ($fallbackChatBody.extra_body.imageConfig.aspectRatio -eq '1:1') 'fallback derives chat aspect ratio from size'
+    Assert-True ($fallbackChatBody.messages[0].content -match 'Preserve all content') 'fallback chat preserves unspecified content'
 
     'All Keylink image helper tests passed.'
 }

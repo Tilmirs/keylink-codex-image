@@ -63,8 +63,9 @@ bash ./install.sh
 
 - 支持 `POST /v1/chat/completions` 生图和参考图编辑。
 - 支持两种图生图流程：把上一轮生成结果作为下一轮输入继续修改，或直接把用户上传的图片和新的 prompt 一起发送；已知图片模型的文生图使用 Images Generations，带参考图时使用 `/v1/images/edits` 的 multipart `image` 文件字段，也可显式选择 Chat Completions，并返回保存后的修改图片。
+- 未显式指定端点时，Images Edits 只有在返回端点/能力类错误时才会用同一模型自动尝试一次 Chat；显式选择 `images`、`chat` 或自定义端点时不切换。
 - 支持 `POST /v1/images/generations` 文生图。
-- 自动路由以下模型到 Keylink Images Generations，同时仍允许用户显式选择 Chat Completions：
+- 自动路由以下模型到 Keylink Images（文生图使用 Generations，带参考图使用 Edits），同时仍允许用户显式选择 Chat Completions：
   - `gpt-image-2`
   - `gemini-3-pro-image`
   - `gemini-2.5-flash-image`
@@ -106,7 +107,7 @@ API Key 只负责鉴权，本身不包含模型列表或分辨率列表。skill 
 - 模型发现：`/v1/models`
 - Codex/CCSwitch 路由会在每次执行时读取当前 provider 地址，不固定 localhost 端口。
 - 手动代理覆盖顺序为：显式代理地址、`KEYLINK_PROXY_BASE_URL`、Codex `config.toml`。
-- 某些本地 Codex 路由只支持 chat/responses，不支持 images。遇到 404 时不能偷偷换模型或端点；应说明原因，并在用户批准后改用直连 Keylink。
+- 某些本地 Codex 路由只支持 chat/responses，不支持 Images Edits。对未显式指定端点的已知图片模型图生图，Images Edits 遇到明确的端点/能力错误时会自动用同一模型尝试一次 Chat；显式指定 `images`、`chat` 或自定义端点时保持用户选择不变。
 
 ## 项目结构
 

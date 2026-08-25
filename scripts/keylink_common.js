@@ -128,11 +128,20 @@ async function fetchJson(url, options, timeoutSec, key, label) {
   try {
     const response = await fetch(url, { ...options, signal: controller.signal });
     const text = await response.text();
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 1000)}`);
+    if (!response.ok) {
+      const error = new Error(`HTTP ${response.status}: ${text.slice(0, 1000)}`);
+      error.status = response.status;
+      error.responseBody = text;
+      throw error;
+    }
     try { return JSON.parse(text); } catch { throw new Error(`Response was not valid JSON: ${text.slice(0, 500)}`); }
   } catch (error) {
     const safe = key ? String(error.message).split(key).join('<redacted>') : error.message;
-    throw new Error(`${label}: ${safe}`);
+    const wrapped = new Error(`${label}: ${safe}`);
+    if (error.status !== undefined) wrapped.status = error.status;
+    if (error.responseBody !== undefined) wrapped.responseBody = key ? String(error.responseBody).split(key).join('<redacted>') : error.responseBody;
+    wrapped.cause = error;
+    throw wrapped;
   } finally { clearTimeout(timer); }
 }
 

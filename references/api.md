@@ -109,9 +109,11 @@ The helper saves the first image found in these forms:
 - A `data:image/...;base64,...` URI in a chat response
 - An image URL in chat message content, including Markdown image syntax
 
-The script does not silently switch models or endpoints after an API error. Surface the service error so Codex can ask the user for a natural-language correction. If the host approval layer blocks filesystem or network access, explain the required permission and stop. Shell execution and credentials remain internal to the host.
+The script does not switch models after an API error. For an implicit known-model reference edit only, an Images Edits capability error (HTTP 400/404/405/415/422/501 with an unsupported-edit or multipart indication) triggers one retry through Chat Completions with the same model and reference image. Authentication, rate-limit, content, network, and server errors are surfaced without retry; explicit endpoint selections are never changed. If both attempts fail, report both safe errors.
 
 For a follow-up edit, pass the previously saved `OutputPath` as `--input-image-path`. For an uploaded attachment, pass its local path or an approved remote image URL. In Images mode the value is uploaded as the `image` multipart file to `/v1/images/edits`; in Chat mode it is sent as `image_url`. The helper adds an instruction to preserve unspecified content and requires an image payload in the response; it does not treat a text-only answer as a successful edit.
+
+When the implicit Images Edits path falls back to Chat, the result reports `EndpointMode: "chat"`, the effective Chat `Endpoint`, and `FallbackFromEndpoint`/`FallbackReason` fields so callers can distinguish native Images Edits from the compatibility retry.
 
 ## Model and resolution discovery
 

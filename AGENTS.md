@@ -55,8 +55,8 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
    - `gemini-3-pro-image`
    - `gemini-2.5-flash-image`
    - `gemini-3.1-flash-image`
-3. An explicit `-EndpointMode chat` must continue to allow any model through Chat Completions. Do not silently change the requested model, endpoint, or route after an API failure.
-4. Known image models use `/v1/images/generations` JSON for text-only generation and `/v1/images/edits` multipart with an `image` file field for reference-image editing. Chat Completions remains an explicit alternate using an OpenAI-style `image_url` block; do not silently switch after an endpoint failure.
+3. An explicit `-EndpointMode chat` must continue to allow any model through Chat Completions and must remain on Chat if it fails.
+4. Known image models use `/v1/images/generations` JSON for text-only generation and first try `/v1/images/edits` multipart with an `image` file field for implicit reference-image editing. Only an implicit Images Edits capability error may trigger one Chat retry with the same model/reference; explicit `-EndpointMode images`, `-Endpoint`, and Chat selections must remain exact.
 5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. The helper's `NextEditInputPath` is the canonical value to carry forward.
 6. The Codex/CCSwitch proxy address is dynamic. Read the active provider configuration on every run. Preserve the override order: `-ProxyBaseUrl`, `KEYLINK_PROXY_BASE_URL`, then Codex `config.toml`.
 7. A local proxy may support Chat Completions but return 404 for Images Generations. In that case, explain the route limitation and use direct Keylink only after the required credential approval.
@@ -80,6 +80,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - Default to a model-advertised 2K-class size; if 2K is unavailable, use the best advertised 1K-class size.
 - Only attempt 4K/UHD/4096 after explicit user intent. If unavailable, list actual sizes and ask for explicit local-upscale approval before doing any local crop/upscale; never label a resized canvas as native 4K. For native edits, send the original image to `/v1/images/edits` with the selected size.
 - Use pixel `Size` for Images Generations and `AspectRatio` for Chat Completions. Reject incompatible parameters instead of silently ignoring them.
+- When Images Edits falls back to Chat, derive an aspect ratio from the requested pixel size when possible and report that Chat does not guarantee the requested pixel dimensions.
 - Verify the actual width and height of the saved result because chat output may not expose a fixed pixel contract.
 
 ## Where to make common changes
