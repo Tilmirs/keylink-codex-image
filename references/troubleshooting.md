@@ -4,7 +4,7 @@ Use this guide after a request fails. Preserve the user's requested model. Autom
 
 ## Model and resolution selection
 
-The API key is only a credential; it does not contain a model catalog. Run `node scripts/list_image_models.js` internally to query `/v1/models`. The helper filters likely image-capable models and returns capability evidence without exposing the key. If the response includes sizes or aspect ratios, they appear as advertised values. If it does not, the helper returns explicitly unverified suggestions. The model and resolution still require user selection when multiple choices are available; ask for that choice in natural language and translate it into script parameters internally.
+The API key is only a credential; it does not contain a model catalog. Run `node scripts/list_image_models.js` internally to query `/v1/models`. The helper filters likely image-capable models and returns capability evidence without exposing the key. If the response includes sizes or aspect ratios, they appear as advertised values. If it does not, the helper returns explicitly unverified suggestions. When the user asks for more clarity, a different resolution, or a size outside the conservative defaults, show a short numbered list containing `1024x1024`, `1536x1024`, `1024x1536`, plus advertised/high-resolution candidates, and wait for the user's natural-language choice before invoking generation.
 
 For `gpt-image-2` and the supported Gemini image models, use the conservative default sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition. Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, try `2560x1440` for 2K-class and `3840x2160` for 4K while preserving the selected model ID. If no 4K size is advertised, report the available sizes and ask for explicit approval before local upscaling. If a submitted high-resolution request fails on the preferred endpoint, try the other endpoint with the same model; if both fail, preserve both service errors and explain whether the model, channel, or requested size is unsupported. Never silently fall back to 1K or switch model IDs. A local resize produces a 4K canvas but not native 4K detail.
 
@@ -33,6 +33,10 @@ Symptom: `status_code=400, images[].image_url is required`.
 Cause: the gateway received the edit prompt without its compatibility top-level image entry, often because the previous assistant image was displayed in the conversation but was not reused as the next request's reference.
 
 Action: recover the latest `NextEditInputPath`, pass it as `--input-image-path`, and let the helper emit both `messages[].content[].image_url` and `images[].image_url`. Keep only the requested visual delta in the prompt.
+
+Symptom: the helper says it cannot recognize the returned image.
+
+Action: the response parser accepts standard `data[].b64_json`/`url`, Chat `image_url` blocks, `images[].image_url`, Markdown/data URLs, and nested base64 image fields. Preserve the safe response preview in the error; if the provider returns a new shape, add it to the parser and a mock regression test instead of treating a text-only response as an image.
 
 ## Model rejected by one endpoint
 

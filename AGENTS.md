@@ -78,6 +78,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - `AdvertisedSizes` and `AdvertisedAspectRatios` are service-provided facts.
 - `SuggestedSizes` and `SuggestedAspectRatios` are unverified fallbacks and must be labeled as such.
 - For `gpt-image-2` and the supported Gemini image models, default to the conservative sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition; do not assume an unadvertised `2048x2048` size.
+- If the user asks for higher clarity, a different resolution, or a non-default size, present the advertised sizes plus the conservative candidates as a short numbered list and wait for the user's selection before sending the request.
 - Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, use `2560x1440` for 2K-class and `3840x2160` for 4K. Preserve the selected `gpt-image-2` model ID for these requests.
 - If 4K is not advertised, list actual sizes and ask for explicit local-upscale approval before any local crop/upscale; never label a resized canvas as native 4K. If a submitted high-resolution request fails on the preferred automatic endpoint, try the other endpoint with the same model and preserve both errors if it also fails; do not silently fall back to 1K or switch model IDs. For native edits, send the original image to `/v1/images/edits` with the selected size.
 - Enforce a minimum 480-second timeout for `3840`-class requests; preserve an explicitly longer timeout.

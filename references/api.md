@@ -118,6 +118,8 @@ The helper saves the first image found in these forms:
 
 - `data[0].b64_json`
 - `data[0].url`
+- `images[].image_url` (string or `{url: ...}`)
+- nested image objects containing `b64_json`, `base64`, `image`, `src`, or `uri`
 - A `data:image/...;base64,...` URI in a chat response
 - An image URL in chat message content, including Markdown image syntax
 

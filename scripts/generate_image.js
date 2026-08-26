@@ -102,15 +102,55 @@ function mimeFromBytes(bytes, fallbackPath) {
 }
 function imageMime(filePath) { return mimeFromBytes(fs.readFileSync(filePath), filePath); }
 function imagePayload(response, key) {
-  const first = Array.isArray(response.data) ? response.data[0] : undefined;
-  if (first?.b64_json) return { kind: 'base64', value: first.b64_json };
-  if (first?.url) return { kind: 'url', value: first.url };
+  const dataUrlPattern = /data:(image\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=_-\s]+)/i;
+  const urlPattern = /^https?:\/\//i;
+
+  const fromString = (value, hint = '') => {
+    const text = String(value || '').replaceAll('\\/', '/').trim();
+    if (!text) return undefined;
+    const dataUrl = text.match(dataUrlPattern);
+    if (dataUrl) return { kind: 'base64', value: dataUrl[2].replace(/\s/g, '') };
+    const markdown = text.match(/!\[[^\]]*\]\((https?:\/\/[^\s)]+|data:image\/[^)]+)\)/i);
+    if (markdown) return fromString(markdown[1], hint);
+    if (urlPattern.test(text)) return { kind: 'url', value: text.replace(/["'<>),]+$/, '') };
+    // Some gateways return raw base64 under an explicitly image-like field
+    // instead of `b64_json`; never interpret arbitrary prose as an image.
+    if (/(?:b64|base64|image|photo|picture|blob|src|uri|data)/i.test(hint) && /^[A-Za-z0-9+/=_-]{32,}$/.test(text)) {
+      return { kind: 'base64', value: text };
+    }
+    return undefined;
+  };
+
+  const preferredKeys = /^(b64_json|b64|base64|image_url|url|src|uri|image|photo|picture|content)$/i;
+  const visited = new Set();
+  const walk = (value, hint = '') => {
+    if (value === null || value === undefined) return undefined;
+    if (typeof value === 'string') return fromString(value, hint);
+    if (typeof value !== 'object' || visited.has(value)) return undefined;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item, hint);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    const entries = Object.entries(value);
+    for (const [name, child] of entries.filter(([name]) => preferredKeys.test(name))) {
+      const found = walk(child, name);
+      if (found) return found;
+    }
+    for (const [name, child] of entries) {
+      if (preferredKeys.test(name)) continue;
+      const found = walk(child, name);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
+  const found = walk(response);
+  if (found) return found;
   const json = JSON.stringify(response);
-  const data = json.match(/data:image\/[A-Za-z0-9.+-]+;base64,([A-Za-z0-9+/=_-]+)/);
-  if (data) return { kind: 'base64', value: data[1] };
-  const urls = [...json.matchAll(/https?:\\?\/\\?\/[^"'\s<>\)]+/g)].map((match) => match[0].replaceAll('\\/', '/').replace(/\\$/, ''));
-  const likely = urls.find((url) => /(\.(png|jpe?g|webp|gif|avif)(\?|$)|\/images?\/|image=)/i.test(url)) || (urls.length === 1 ? urls[0] : undefined);
-  if (likely) return { kind: 'url', value: likely };
   const preview = key ? json.slice(0, 1000).split(key).join('<redacted>') : json.slice(0, 1000);
   fail(`The API response did not contain a supported image payload. Response preview: ${preview}`);
 }

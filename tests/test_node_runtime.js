@@ -113,6 +113,12 @@ const server = http.createServer((request, response) => {
         if (payload.prompt.includes('Trigger 200 no image')) {
           return response.end(JSON.stringify({ diagnostic: 'Images endpoint returned no image payload' }));
         }
+        if (payload.prompt.includes('Nested image response')) {
+          return response.end(JSON.stringify({ images: [{ image_url: { url: `data:image/png;base64,${tinyPng}` } }] }));
+        }
+        if (payload.prompt.includes('Raw base64 image response')) {
+          return response.end(JSON.stringify({ output: [{ content: [{ type: 'image', image: tinyPng }] }] }));
+        }
       }
       response.end(JSON.stringify({ data: [{ b64_json: tinyPng }] }));
     });
@@ -235,6 +241,18 @@ const server = http.createServer((request, response) => {
     assert.equal(generated.OutputPath, output);
     assert.equal(generated.NextEditInputPath, output);
     assert.ok(fs.statSync(output).size > 0);
+    const nestedImage = await run('generate_image.js', [
+      '--prompt', 'Nested image response', '--model', 'gpt-image-2', '--size', '1024x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'nested-image.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(nestedImage.EndpointMode, 'images');
+    assert.ok(fs.statSync(path.join(temp, 'nested-image.png')).size > 0);
+    const rawBase64Image = await run('generate_image.js', [
+      '--prompt', 'Raw base64 image response', '--model', 'gpt-image-2', '--size', '1024x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'raw-base64-image.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(rawBase64Image.EndpointMode, 'images');
+    assert.ok(fs.statSync(path.join(temp, 'raw-base64-image.png')).size > 0);
     const highResolution = await run('generate_image.js', [
       '--prompt', 'high-resolution test', '--model', 'gpt-image-2', '--size', '2560x1440', '--base-url', base,
       '--output-path', path.join(temp, 'high-resolution.png'),
