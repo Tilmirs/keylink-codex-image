@@ -24,9 +24,15 @@ After generation, inspect the saved file's actual width and height. For Chat Com
 
 ## Follow-up edit or uploaded image
 
-When the user asks to change part of an image generated earlier, reuse that generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. GPT image models first use `/v1/images/edits`; Gemini image models first use `/v1/chat/completions`; the other endpoint is attempted automatically when the first fails or returns no image. Images edits upload bytes as the multipart `image` field; Chat uses `image_url`. JSON `input_image` is not a file upload for Images Edits. Surface both endpoint errors if both attempts fail.
+When the user expresses dissatisfaction or a correction about the current picture, reuse the immediately preceding successful generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. GPT image models first use `/v1/images/edits`; Gemini image models first use `/v1/chat/completions`; the other endpoint is attempted automatically when the first fails or returns no image. Images edits upload bytes as the multipart `image` field; Chat sends both the standard `messages[].content[].image_url` and Keylink's compatibility `images[].image_url`. JSON `input_image` is not a file upload for Images Edits. Surface both endpoint errors if both attempts fail.
 
-If an edit appears to regenerate from the text prompt, inspect the command before diagnosing the model: confirm that `--input-image-path` equals the immediately preceding successful result's `NextEditInputPath`. A visually similar or older filename is not sufficient.
+If an edit appears to regenerate from the text prompt, inspect the command before diagnosing the model: confirm that `--input-image-path` equals the immediately preceding successful result's `NextEditInputPath`, and confirm the Chat payload contains both image fields when Chat is used. A visually similar or older filename is not sufficient.
+
+Symptom: `status_code=400, images[].image_url is required`.
+
+Cause: the gateway received the edit prompt without its compatibility top-level image entry, often because the previous assistant image was displayed in the conversation but was not reused as the next request's reference.
+
+Action: recover the latest `NextEditInputPath`, pass it as `--input-image-path`, and let the helper emit both `messages[].content[].image_url` and `images[].image_url`. Keep only the requested visual delta in the prompt.
 
 ## Model rejected by one endpoint
 

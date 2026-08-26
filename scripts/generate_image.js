@@ -17,7 +17,9 @@ const conservativeSizes = {
   portrait: ['1024x1536', '1024x1024'],
 };
 const mimeTypes = { '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
-const editInstruction = 'Edit the supplied image according to the user instruction. Preserve all content the user did not ask to change. Return the edited image itself, not a description or instructions.';
+// Keep the fixed edit instruction short: the user's prompt should contain only
+// the requested visual delta, while the reference image carries the context.
+const editInstruction = 'Edit this image as requested. Preserve everything else. Return only the edited image.';
 
 function fail(message) { throw new Error(message); }
 
@@ -196,6 +198,11 @@ function buildChatPayload(args, inputImageValue, hasInputImage) {
   if (aspectRatio) messages.push({ role: 'system', content: JSON.stringify({ imageConfig: { aspectRatio } }) });
   messages.push({ role: 'user', content });
   const payload = { model: args.model, messages };
+  // Keylink's Chat gateway accepts the OpenAI content block and also validates
+  // its compatibility `images[]` field. Send both so a follow-up edit cannot
+  // fail with `images[].image_url is required` when the gateway only inspects
+  // the top-level image list.
+  if (inputImageValue) payload.images = [{ image_url: inputImageValue }];
   if (aspectRatio) payload.extra_body = { imageConfig: { aspectRatio } };
   return payload;
 }
@@ -226,6 +233,10 @@ function modelRetryGuidance(model) {
   return 'Ask the user whether to try another discovered image model; recommend gpt-image-2 when it is available.';
 }
 
+function looksLikeEditIntent(prompt) {
+  return /(上一张|上一次|刚才|这张图|当前图|在这个图上|不满意|画面不对|保留.*构图|\b(?:edit|change|add|remove|fix)\s+(?:this|the|that|image|picture)|\b(?:this|the|that)\s+(?:image|picture)\b)/i.test(String(prompt || ''));
+}
+
 async function main() {
   const args = common.parseArgs(process.argv.slice(2));
   common.validateArgs(args, [
@@ -250,6 +261,9 @@ async function main() {
     : requestedTimeoutSec;
 
   const hasInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
+  if (!hasInputImage && looksLikeEditIntent(args.prompt)) {
+    fail('This prompt looks like an image edit or continuation. Reuse the latest successful image with --input-image-path or --input-image-url instead of generating from text alone.');
+  }
   const endpointModeWasExplicit = args.endpointMode !== undefined;
   const mode = args.endpointMode || preferredEndpointModes(args.model)[0];
   if (!['chat', 'images'].includes(mode)) fail('--endpoint-mode must be chat or images.');

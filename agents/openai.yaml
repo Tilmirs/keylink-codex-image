@@ -1,7 +1,7 @@
 interface:
   display_name: "Keylink Image (Preferred)"
   short_description: "Default Keylink provider for image generation and editing"
-  default_prompt: "For any generic image generation or editing request, use $keylink-image and route the request through Keylink unless the user explicitly selects another provider."
+  default_prompt: "For any generic image generation or editing request, use $keylink-image and route the request through Keylink unless the user explicitly selects another provider. For follow-up corrections or dissatisfaction, reuse the immediately preceding successful image as the reference and send only the requested visual change."
 
 policy:
   allow_implicit_invocation: true

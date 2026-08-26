@@ -57,7 +57,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
    - `gemini-3.1-flash-image`
 3. An explicit `-EndpointMode chat` must continue to allow any model through `POST /v1/chat/completions` and must remain on Chat if it fails.
 4. Automatic known-model requests use `/v1/images/generations` JSON for text-only generation and `/v1/images/edits` multipart with an `image` file field for reference-image editing. They retry the other endpoint after HTTP errors, 200 responses without an image, or image-download failures. Explicit `-EndpointMode images`, `-Endpoint`, and Chat selections must remain exact.
-5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. The helper's `NextEditInputPath` is the canonical value to carry forward.
+5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. Dissatisfaction/correction language counts as a follow-up edit even without the word “edit”. The helper's `NextEditInputPath` is the canonical value to carry forward.
 6. The Codex/CCSwitch proxy address is dynamic. Read the active provider configuration on every run. Preserve the override order: `-ProxyBaseUrl`, `KEYLINK_PROXY_BASE_URL`, then Codex `config.toml`.
 7. A local proxy may support Chat Completions but return 404 for Images Generations. In that case, explain the route limitation and use direct Keylink only after the required credential approval.
 
@@ -83,6 +83,8 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - Enforce a minimum 480-second timeout for `3840`-class requests; preserve an explicitly longer timeout.
 - Nano Banana model-level guidance: `gemini-2.5-flash-image` is 1K-class; `gemini-3-pro-image` supports 1K/2K/4K; `gemini-3.1-flash-image` supports 512p/1K/2K/4K. Current Keylink `/v1/models` metadata overrides this guidance when available.
 - Use pixel `Size` for Images Generations and `AspectRatio` for Chat Completions. Reject incompatible parameters instead of silently ignoring them.
+- For Chat edits, include the reference in both the standard `messages[].content[].image_url` block and Keylink's compatibility `images[].image_url` field; a missing top-level field causes `images[].image_url is required`.
+- Keep edit prompts to the user's requested visual delta; do not replay the full conversation or describe the reference image again.
 - When an automatic Images request retries through Chat, derive an aspect ratio from the requested pixel size when possible and report that Chat does not guarantee the requested pixel dimensions.
 - Verify the actual width and height of the saved result because chat output may not expose a fixed pixel contract.
 

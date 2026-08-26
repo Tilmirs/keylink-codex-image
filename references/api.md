@@ -62,6 +62,18 @@ For an edit in Chat mode, the user content also contains an OpenAI-style image b
 }
 ```
 
+For Keylink gateway compatibility, the helper also includes the same reference as a top-level `images` entry:
+
+```json
+{
+  "images": [
+    { "image_url": "data:image/png;base64,..." }
+  ]
+}
+```
+
+This prevents the gateway validation error `images[].image_url is required` while retaining the standard Chat content block.
+
 Remote reference URLs are passed directly. Local images are converted to data URLs in memory and are not copied into the skill directory.
 
 ## Images-generations mode
@@ -111,7 +123,7 @@ The helper saves the first image found in these forms:
 
 The script never switches model IDs after an API error. For an implicit known-model request, it tries the two endpoints in the model-specific order above. Authentication, rate-limit, content, network, server, unsupported-endpoint, and missing-image responses are recorded as failed attempts; if both attempts fail, report both safe errors and ask whether to try another discovered image model.
 
-For a follow-up edit, pass the previously saved `OutputPath` as `--input-image-path`. For an uploaded attachment, pass its local path or an approved remote image URL. In Images mode the value is uploaded as the `image` multipart file to `/v1/images/edits`; in Chat mode it is sent as `image_url`. The helper adds an instruction to preserve unspecified content and requires an image payload in the response; it does not treat a text-only answer as a successful edit.
+For a follow-up edit, pass the previously saved `OutputPath` as `--input-image-path`. For an uploaded attachment, pass its local path or an approved remote image URL. In Images mode the value is uploaded as the `image` multipart file to `/v1/images/edits`; in Chat mode it is sent as both the standard content `image_url` and the compatibility `images[].image_url`. Keep the edit prompt to the user's requested visual delta; the helper adds a short instruction to preserve unspecified content and requires an image payload in the response. It does not treat a text-only answer as a successful edit.
 
 When an automatic endpoint retry is used, the result reports the effective `EndpointMode`/`Endpoint`, `AttemptOrder`, and `EndpointAttempts`; `FallbackFromEndpoint`/`FallbackReason` identify the failed attempt for compatibility with existing callers.
 

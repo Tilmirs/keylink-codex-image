@@ -62,7 +62,7 @@ bash ./install.sh
 ## 能力
 
 - 支持 `POST /v1/chat/completions` 生图和参考图编辑。
-- 支持两种图生图流程：把上一轮生成结果作为下一轮输入继续修改，或直接把用户上传的图片和新的 prompt 一起发送；Images Edits 使用 `/v1/images/edits` 的 multipart `image` 文件字段，Chat 使用 `/v1/chat/completions` 的 `image_url`，并返回保存后的修改图片。
+- 支持两种图生图流程：把上一轮生成结果作为下一轮输入继续修改，或直接把用户上传的图片和新的 prompt 一起发送；Images Edits 使用 `/v1/images/edits` 的 multipart `image` 文件字段，Chat 使用 `/v1/chat/completions`，同时发送标准 `messages[].content[].image_url` 和兼容的 `images[].image_url`，并返回保存后的修改图片。
 - 未显式指定端点时，`gpt-image-2` 先尝试 Images（Generations/Edits），再尝试 Chat；Gemini 图片模型先尝试 Chat，再尝试 Images。HTTP 错误、200 但没有图片、图片下载失败都会继续尝试另一个端点；两个端点都失败才汇总错误并询问是否切换模型。显式选择 `images`、`chat` 或自定义端点时不切换。
 - 支持 `POST /v1/images/generations` 文生图。
 - 自动识别以下模型并按模型类型尝试两个端点，同时仍允许用户显式固定 Chat Completions：
@@ -74,6 +74,7 @@ bash ./install.sh
 - `gpt-image-2` 和支持的 Gemini 图片模型统一使用保守尺寸 `1024x1024`、`1536x1024`、`1024x1536`，按用户要求的画幅选择；平台没有公布尺寸时不假定 `2048x2048`。
 - “更高分辨率 / 高分辨率 / 高清 / 超高清 / 2K / 4K / UHD”或明确更大的像素尺寸都算高分辨率意图。16:9 高分辨率先尝试 `2560x1440`（2K 级），4K 尝试 `3840x2160`；用户选择的 `gpt-image-2` model ID 保持不变。
 - 如果 4K 在模型目录中没有公布，会先列出实际支持尺寸并询问是否允许本地放大；未得到同意前不会放大，也不会把低分辨率结果称为 4K。已经发出的高分辨率请求会按端点策略重试但不降到 1K、不换模型；如果 Chat 成功，会注明像素尺寸不保证。
+- 用户说“不满意”“画面不对”“把刚才的……改成……”等纠正意图时，会自动把最近一次成功生成的图片作为参考图；编辑提示只保留用户要求的变化，避免重复发送整段会话。
 - 动态读取 Codex/CCSwitch 当前代理地址，并允许 AI 处理用户手动修改后的代理地址。
 - 支持常见 OpenAI 兼容返回格式，包括 URL、Base64 和 Chat 消息中的图片。
 

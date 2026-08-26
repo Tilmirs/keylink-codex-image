@@ -75,7 +75,7 @@ const server = http.createServer((request, response) => {
       if (request.url.endsWith('/edits')) {
         const form = parseMultipart(body, request.headers['content-type']);
         assert.ok(['gpt-image-2', 'gemini-3-pro-image'].includes(form.fields.model));
-        assert.match(form.fields.prompt, /Preserve all content/);
+        assert.match(form.fields.prompt, /Preserve everything else/);
         assert.equal(form.fields.n, '1');
         assert.equal(form.files.image.contentType, 'image/png');
         assert.ok(form.files.image.bytes.equals(Buffer.from(tinyPng, 'base64')));
@@ -125,6 +125,9 @@ const server = http.createServer((request, response) => {
       requests.push(payload);
       const content = payload.messages?.find((message) => message.role === 'user')?.content;
       const hasImage = Array.isArray(content) && content.some((item) => item.type === 'image_url');
+      const hasCompatibilityImage = Array.isArray(payload.images)
+        && payload.images.some((item) => typeof item?.image_url === 'string' && item.image_url.length > 0);
+      if (hasImage) assert.ok(hasCompatibilityImage, 'Chat edit includes the compatibility images[].image_url field');
       const promptText = Array.isArray(content) ? content.find((item) => item.type === 'text')?.text || '' : '';
       if (payload.model === 'gemini-3-pro-image' && promptText.includes('Trigger Gemini Chat failure')) {
         return response.end(JSON.stringify({ diagnostic: 'Gemini chat intentionally returned no image' }));
@@ -177,6 +180,10 @@ const server = http.createServer((request, response) => {
       run('list_image_models.js', ['--timeout-sec', 'invalid', '--dry-run'], {}),
       /timeout-sec must be an integer/
     );
+    await assert.rejects(
+      run('generate_image.js', ['--prompt', '这张图不满意，把背景改成蓝色', '--model', 'gpt-image-2', '--dry-run'], {}),
+      usePowerShellGenerator ? /looks like an image edit|input-image-path/i : /looks like an image edit or continuation.*input-image-path/
+    );
     const fourKTimeout = await run('generate_image.js', [
       '--prompt', '4K timeout test', '--model', 'gpt-image-2', '--size', '3840x2160', '--timeout-sec', '300', '--dry-run',
     ], {});
@@ -210,7 +217,7 @@ const server = http.createServer((request, response) => {
     assert.match(fallback.FallbackReason, /HTTP 404/);
     assert.equal(requests[fallbackStart].path, '/v1/images/edits');
     assert.equal(requests[fallbackStart + 1].messages[0].role, 'system');
-    assert.match(requests[fallbackStart + 1].messages[0].content, /Preserve all content/);
+    assert.match(requests[fallbackStart + 1].messages[0].content, /Preserve everything else/);
     assert.equal(requests[fallbackStart + 1].extra_body.imageConfig.aspectRatio, '1:1');
     const explicitChat = await run('generate_image.js', [
       '--prompt', 'Change only the cell membrane to translucent silver.', '--model', 'gpt-image-2', '--endpoint-mode', 'chat',
@@ -218,10 +225,12 @@ const server = http.createServer((request, response) => {
     ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
     assert.equal(explicitChat.EndpointMode, 'chat');
     const chatEditRequest = requests.at(-1);
-    assert.match(chatEditRequest.messages[0].content, /Preserve all content/);
+    assert.match(chatEditRequest.messages[0].content, /Preserve everything else/);
     const editContent = chatEditRequest.messages.find((message) => message.role === 'user').content;
     assert.equal(editContent[0].text, 'Change only the cell membrane to translucent silver.');
     assert.match(editContent[1].image_url.url, /^data:image\/png;base64,/);
+    assert.equal(chatEditRequest.images.length, 1);
+    assert.match(chatEditRequest.images[0].image_url, /^data:image\/png;base64,/);
     const generated = await run('generate_image.js', ['--prompt', 'test', '--model', 'gpt-image-2', '--size', '1024x1024', '--base-url', base, '--output-path', output], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
     assert.equal(generated.OutputPath, output);
     assert.equal(generated.NextEditInputPath, output);
