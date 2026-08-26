@@ -8,6 +8,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
+const usePowerShellGenerator = process.env.KEYLINK_TEST_POWERSHELL === '1';
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'keylink-node-test-'));
 const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xw3lWQAAAABJRU5ErkJggg==';
 const requests = [];
@@ -42,8 +43,16 @@ function parseMultipart(body, contentType) {
 }
 
 function run(script, args, env) {
+  const useCompatibilityEntryPoint = usePowerShellGenerator && script === 'generate_image.js';
+  const command = useCompatibilityEntryPoint ? 'powershell.exe' : process.execPath;
+  const commandArgs = useCompatibilityEntryPoint
+    ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'generate_image.ps1'), ...args.map((arg) => {
+      if (!String(arg).startsWith('--')) return arg;
+      return `-${String(arg).slice(2).split('-').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('')}`;
+    })]
+    : [path.join(root, 'scripts', script), ...args];
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(root, 'scripts', script), ...args], { env: { ...process.env, ...env } });
+    const child = spawn(command, commandArgs, { env: { ...process.env, ...env } });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -65,7 +74,7 @@ const server = http.createServer((request, response) => {
       const body = Buffer.concat(chunks);
       if (request.url.endsWith('/edits')) {
         const form = parseMultipart(body, request.headers['content-type']);
-        assert.equal(form.fields.model, 'gpt-image-2');
+        assert.ok(['gpt-image-2', 'gemini-3-pro-image'].includes(form.fields.model));
         assert.match(form.fields.prompt, /Preserve all content/);
         assert.equal(form.fields.n, '1');
         assert.equal(form.files.image.contentType, 'image/png');
@@ -75,20 +84,34 @@ const server = http.createServer((request, response) => {
           response.statusCode = 404;
           return response.end(JSON.stringify({ error: { message: 'Images Edits endpoint is not supported' } }));
         }
+        if (form.fields.prompt.includes('Trigger both endpoint failures')) {
+          response.statusCode = 404;
+          return response.end(JSON.stringify({ error: { message: 'Images Edits endpoint is not supported' } }));
+        }
         if (form.fields.prompt.includes('Trigger high-resolution model unavailable')) {
           response.statusCode = 404;
           return response.end(JSON.stringify({ error: { message: 'model gpt-image-2 is not available on this channel' } }));
         }
       } else {
         const payload = JSON.parse(body.toString('utf8'));
-        assert.equal(payload.model, 'gpt-image-2');
+        assert.ok(['gpt-image-2', 'gemini-3-pro-image'].includes(payload.model));
         requests.push({ path: request.url, payload });
         if (payload.size && Math.max(...payload.size.split('x').map(Number)) >= 1600) {
           assert.equal(payload.model, 'gpt-image-2', 'high-resolution preserves the requested model ID');
         }
+        if (payload.prompt.includes('Trigger Gemini Images success')) {
+          assert.equal(payload.model, 'gemini-3-pro-image');
+        }
+        if (payload.prompt.includes('Trigger both endpoint failures') || payload.prompt.includes('Trigger Gemini both failures')) {
+          response.statusCode = 400;
+          return response.end(JSON.stringify({ error: { message: 'Images Generations endpoint failed for this test' } }));
+        }
         if (payload.prompt.includes('Trigger high-resolution failure')) {
           response.statusCode = 400;
           return response.end(JSON.stringify({ error: { message: `model ${payload.model} does not support ${payload.size}; high-resolution unavailable` } }));
+        }
+        if (payload.prompt.includes('Trigger 200 no image')) {
+          return response.end(JSON.stringify({ diagnostic: 'Images endpoint returned no image payload' }));
         }
       }
       response.end(JSON.stringify({ data: [{ b64_json: tinyPng }] }));
@@ -102,6 +125,23 @@ const server = http.createServer((request, response) => {
       requests.push(payload);
       const content = payload.messages?.find((message) => message.role === 'user')?.content;
       const hasImage = Array.isArray(content) && content.some((item) => item.type === 'image_url');
+      const promptText = Array.isArray(content) ? content.find((item) => item.type === 'text')?.text || '' : '';
+      if (payload.model === 'gemini-3-pro-image' && promptText.includes('Trigger Gemini Chat failure')) {
+        return response.end(JSON.stringify({ diagnostic: 'Gemini chat intentionally returned no image' }));
+      }
+      if (payload.model === 'gpt-image-2' && promptText.includes('Trigger both endpoint failures')) {
+        response.statusCode = 400;
+        return response.end(JSON.stringify({ error: { message: 'Chat Completions endpoint failed for this test' } }));
+      }
+      if (payload.model === 'gpt-image-2' && promptText.includes('Trigger high-resolution failure')) {
+        return response.end(JSON.stringify({ diagnostic: 'Chat did not return a high-resolution image' }));
+      }
+      if (payload.model === 'gpt-image-2' && promptText.includes('Trigger 200 no image')) {
+        return response.end(JSON.stringify({ choices: [{ message: { content: `![chat-fallback](data:image/png;base64,${tinyPng})` } }] }));
+      }
+      if (payload.model === 'gemini-3-pro-image' && !promptText.includes('Trigger Gemini both failures')) {
+        return response.end(JSON.stringify({ choices: [{ message: { content: `![gemini](data:image/png;base64,${tinyPng})` } }] }));
+      }
       if (hasImage) return response.end(JSON.stringify({ choices: [{ message: { content: `![edited](data:image/png;base64,${tinyPng})` } }] }));
       return response.end(JSON.stringify({ diagnostic: request.headers.authorization }));
     });
@@ -127,7 +167,7 @@ const server = http.createServer((request, response) => {
     assert.deepEqual(geminiModel.SuggestedSizes, ['1024x1024', '1536x1024', '1024x1536'], 'Gemini uses the same conservative defaults');
     await assert.rejects(
       run('generate_image.js', ['--prompt', 'test', '--model', 'gpt-image-2', '--szie', '1024x1024', '--dry-run'], {}),
-      /Unknown option: --szie/
+      usePowerShellGenerator ? /szie|parameter cannot be found|Unknown option/i : /Unknown option: --szie/
     );
     await assert.rejects(
       run('generate_image.js', ['--prompt', 'test', '--model', 'gpt-image-2', '--route', 'direct', '--proxy-base-url', base, '--dry-run'], {}),
@@ -214,19 +254,57 @@ const server = http.createServer((request, response) => {
     assert.equal(fourKEditRequest.form.fields.size, '3840x2160');
     assert.ok(fourKEditRequest.form.files.image, `4K edit file fields: ${JSON.stringify(Object.keys(fourKEditRequest.form.files))}`);
     assert.ok(fourKEditRequest.form.files.image.bytes.equals(Buffer.from(tinyPng, 'base64')));
+    const noImageFallback = await run('generate_image.js', [
+      '--prompt', 'Trigger 200 no image', '--model', 'gpt-image-2', '--size', '1024x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'no-image-fallback.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(noImageFallback.EndpointMode, 'chat', 'HTTP 200 without an image must continue to Chat');
+    assert.equal(noImageFallback.EndpointAttempts[0].Status, 'failed');
+    assert.equal(noImageFallback.EndpointAttempts[1].Status, 'succeeded');
+    const modelUnavailable = await run('generate_image.js', [
+      '--prompt', 'Trigger high-resolution model unavailable', '--model', 'gpt-image-2', '--size', '3840x2160',
+      '--input-image-path', input, '--base-url', base, '--output-path', path.join(temp, 'four-k-model-failure.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(modelUnavailable.EndpointMode, 'chat', 'a failed GPT Images request can succeed through Chat');
+    assert.deepEqual(modelUnavailable.AttemptOrder, ['images', 'chat']);
+    assert.equal(modelUnavailable.EndpointAttempts[0].Status, 'failed');
+    assert.equal(modelUnavailable.EndpointAttempts[1].Status, 'succeeded');
     await assert.rejects(
       run('generate_image.js', [
-        '--prompt', 'Trigger high-resolution model unavailable', '--model', 'gpt-image-2', '--size', '3840x2160',
-        '--input-image-path', input, '--base-url', base, '--output-path', path.join(temp, 'four-k-model-failure.png'),
-      ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' }),
-      /High-resolution 4K request \(3840x2160\).*selected model\/channel is unavailable.*model gpt-image-2 is not available/
-    );
-    await assert.rejects(
-      run('generate_image.js', [
-        '--prompt', 'Trigger high-resolution failure', '--model', 'gpt-image-2', '--size', '2560x1440', '--base-url', base,
+        '--prompt', 'Trigger both endpoint failures', '--model', 'gpt-image-2', '--size', '2560x1440', '--base-url', base,
         '--output-path', path.join(temp, 'high-resolution-failure.png'),
       ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' }),
-      /High-resolution 2K request \(2560x1440\).*no lower-resolution fallback was attempted/
+      (error) => error.message.includes('Both Keylink endpoints failed for model gpt-image-2')
+        && error.message.includes('Images Generations endpoint')
+        && error.message.includes('Chat endpoint')
+    );
+
+    const geminiChat = await run('generate_image.js', [
+      '--prompt', 'Gemini Chat success', '--model', 'gemini-3-pro-image', '--size', '1536x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'gemini-chat.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(geminiChat.EndpointMode, 'chat');
+    assert.deepEqual(geminiChat.AttemptOrder, ['chat', 'images']);
+    assert.equal(geminiChat.EndpointAttempts.length, 1, 'Gemini Chat success does not call Images');
+
+    const geminiImages = await run('generate_image.js', [
+      '--prompt', 'Trigger Gemini Chat failure then Gemini Images success', '--model', 'gemini-3-pro-image', '--size', '1536x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'gemini-images.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(geminiImages.EndpointMode, 'images');
+    assert.deepEqual(geminiImages.AttemptOrder, ['chat', 'images']);
+    assert.equal(geminiImages.EndpointAttempts[0].EndpointMode, 'chat');
+    assert.equal(geminiImages.EndpointAttempts[0].Status, 'failed');
+    assert.equal(geminiImages.EndpointAttempts[1].EndpointMode, 'images');
+
+    await assert.rejects(
+      run('generate_image.js', [
+        '--prompt', 'Trigger Gemini both failures', '--model', 'gemini-3-pro-image', '--size', '1536x1024', '--base-url', base,
+        '--output-path', path.join(temp, 'gemini-failure.png'),
+      ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' }),
+      (error) => error.message.includes('Both Keylink endpoints failed for model gemini-3-pro-image')
+        && error.message.includes('Chat endpoint')
+        && error.message.includes('Images Generations endpoint')
     );
     console.log('All Keylink cross-platform Node runtime tests passed.');
   } finally {

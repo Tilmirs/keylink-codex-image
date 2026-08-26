@@ -26,6 +26,19 @@ function isKnownImageModel(model) {
   return knownImageModels.has(normalized);
 }
 
+function isGeminiImageModel(model) {
+  return /^gemini-.+-image$/i.test(String(model || ''));
+}
+
+function preferredEndpointModes(model) {
+  if (isGeminiImageModel(model)) return ['chat', 'images'];
+  if (isKnownImageModel(model)) return ['images', 'chat'];
+  // Unknown models stay on the documented Chat default.  Discovery should
+  // establish image capability before the two-endpoint image retry policy is
+  // used for a model.
+  return ['chat'];
+}
+
 function parseSize(size) {
   const match = String(size || '').match(/^(\d+)x(\d+)$/);
   if (!match) return undefined;
@@ -76,11 +89,6 @@ function isUnsupportedSizeError(error) {
   return mentionsSize && rejectsSize;
 }
 
-function isModelAvailabilityError(error) {
-  const status = Number(error?.status);
-  const details = `${error?.responseBody || ''} ${error?.message || ''}`;
-  return [400, 404, 422, 503].includes(status) && /(model[_ -]?not[_ -]?found|no available channel|unknown model|unsupported model|model.+not.+available)/i.test(details);
-}
 function mimeFromBytes(bytes, fallbackPath) {
   bytes = Buffer.from(bytes).subarray(0, 16);
   if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
@@ -211,19 +219,11 @@ function buildImagesPayload(args, inputImageValue, hasInputImage, size) {
   return payload;
 }
 
-function isImagesEditFallbackError(error) {
-  const status = Number(error?.status);
-  const details = `${error?.responseBody || ''} ${error?.message || ''}`.toLowerCase();
-  // A size-capability failure must be handled by the resolution ladder, not by
-  // changing an Images Edits request into Chat (which cannot guarantee pixels).
-  if (isUnsupportedSizeError(error)) return false;
-  // A missing or unavailable high-resolution model is a model/channel failure,
-  // not an Images Edits capability failure.  Retrying Chat with the same model
-  // would hide the original service error and still cannot guarantee pixels.
-  if (isModelAvailabilityError(error)) return false;
-  if ([404, 405, 415, 501].includes(status)) return true;
-  if (![400, 422].includes(status)) return false;
-  return /(unsupported|not supported|not implemented|endpoint|image\s*edit|images\/edits|multipart|image is required|input_image|method not allowed)/i.test(details);
+function modelRetryGuidance(model) {
+  if (String(model || '').toLowerCase() === 'gpt-image-2') {
+    return 'Ask the user whether to try one of the discovered Gemini image models.';
+  }
+  return 'Ask the user whether to try another discovered image model; recommend gpt-image-2 when it is available.';
 }
 
 async function main() {
@@ -250,10 +250,12 @@ async function main() {
     : requestedTimeoutSec;
 
   const hasInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
-  const mode = args.endpointMode || (isKnownImageModel(args.model) ? 'images' : 'chat');
+  const endpointModeWasExplicit = args.endpointMode !== undefined;
+  const mode = args.endpointMode || preferredEndpointModes(args.model)[0];
   if (!['chat', 'images'].includes(mode)) fail('--endpoint-mode must be chat or images.');
-  if (mode === 'chat' && args.size) fail('Chat mode uses --aspect-ratio; --size is only for images mode.');
-  if (mode === 'images' && args.aspectRatio) fail('Images mode uses --size; --aspect-ratio is only for chat mode.');
+  if (endpointModeWasExplicit && mode === 'chat' && args.size) fail('Chat mode uses --aspect-ratio; --size is only for images mode.');
+  if (endpointModeWasExplicit && mode === 'images' && args.aspectRatio) fail('Images mode uses --size; --aspect-ratio is only for chat mode.');
+  if (!endpointModeWasExplicit && args.size && args.aspectRatio) fail('Automatic endpoint mode accepts either --size or --aspect-ratio, not both.');
   const requestedModel = args.model;
   const requestedSize = args.size;
   // Preserve the user-selected model ID, including for high-resolution
@@ -261,15 +263,19 @@ async function main() {
   // requested size; a rejection is surfaced rather than silently switching IDs.
   const effectiveArgs = { ...args, model: requestedModel };
 
+  const canTryBothEndpoints = !endpointModeWasExplicit && !args.endpoint;
+  const attemptModes = canTryBothEndpoints ? preferredEndpointModes(requestedModel) : [mode];
   let route = args.useCodexRoute ? 'codex' : (args.route || 'auto');
   if (args.endpoint) route = 'custom';
   if (route === 'auto') {
-    if (args.baseUrl || mode === 'images') route = 'direct';
+    if (args.baseUrl || canTryBothEndpoints || mode === 'images') route = 'direct';
     else { try { common.codexRouteBase(args.proxyBaseUrl); route = 'codex'; } catch { route = 'direct'; } }
   }
   if (!['direct', 'codex', 'custom'].includes(route)) fail('--route must be auto, direct, or codex.');
   const base = route === 'codex' ? common.codexRouteBase(args.proxyBaseUrl) : common.directBase(args.baseUrl);
-  const resolvedEndpoint = args.endpoint || common.endpoint(base, mode === 'chat' ? 'chat/completions' : (hasInputImage ? 'images/edits' : 'images/generations'));
+  const endpointForMode = (endpointMode) => args.endpoint || common.endpoint(base,
+    endpointMode === 'chat' ? 'chat/completions' : (hasInputImage ? 'images/edits' : 'images/generations'));
+  const resolvedEndpoint = endpointForMode(mode);
   if (args.useCcswitchCredential && (route === 'codex' || !common.isKeylink(resolvedEndpoint))) fail('The CCSwitch credential can only be sent directly to keylinkclub.com.');
 
   let inputImageValue;
@@ -291,24 +297,32 @@ async function main() {
   }
 
   let activeSize = args.size;
-  const payload = mode === 'chat'
-    ? buildChatPayload(effectiveArgs, inputImageValue, hasInputImage)
-    : buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, activeSize);
-  if (args.dryRun) return console.log(JSON.stringify({
-    Operation: hasInputImage ? 'edit' : 'generate', EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint,
-    RequestFormat: mode === 'images' && hasInputImage ? 'multipart/form-data' : 'application/json',
-    RequestedModel: requestedModel, Model: effectiveArgs.model, RequestedSize: requestedSize,
-    Size: activeSize, ResolutionTier: resolutionTier(activeSize), RequestedTimeoutSec: requestedTimeoutSec,
-    TimeoutSec: timeoutSec, Payload: payload,
-  }, null, 2));
+  const payloadForMode = (endpointMode, size) => endpointMode === 'chat'
+    ? buildChatPayload({ ...effectiveArgs, size }, inputImageValue, hasInputImage)
+    : buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, size);
+  const payload = payloadForMode(mode, activeSize);
+  if (args.dryRun) {
+    const attempts = attemptModes.map((endpointMode) => ({
+      EndpointMode: endpointMode,
+      Endpoint: endpointForMode(endpointMode),
+      RequestFormat: endpointMode === 'images' && hasInputImage ? 'multipart/form-data' : 'application/json',
+      Payload: payloadForMode(endpointMode, activeSize),
+    }));
+    return console.log(JSON.stringify({
+      Operation: hasInputImage ? 'edit' : 'generate', EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint,
+      RequestFormat: attempts[0].RequestFormat, AttemptOrder: attemptModes, Attempts: attempts,
+      RequestedModel: requestedModel, Model: effectiveArgs.model, RequestedSize: requestedSize,
+      Size: activeSize, ResolutionTier: resolutionTier(activeSize), RequestedTimeoutSec: requestedTimeoutSec,
+      TimeoutSec: timeoutSec, Payload: payload,
+    }, null, 2));
+  }
 
   const noAuth = args.noAuth || (route === 'codex' && common.isLoopback(resolvedEndpoint) && !args.apiKey && !args.apiKeyFile);
   const key = noAuth ? undefined : common.resolveKey(args);
   let reference;
-  if (mode === 'images' && hasInputImage) {
+  if (attemptModes.includes('images') && hasInputImage) {
     reference = await buildReferenceImage(args, inputImageValue, timeoutSec);
   }
-  const canAutoChatFallback = mode === 'images' && hasInputImage && args.endpointMode === undefined && !args.endpoint;
   let activeMode = mode;
   let activeEndpoint = resolvedEndpoint;
   let activePayload = payload;
@@ -317,34 +331,57 @@ async function main() {
   let sizeFallbackFrom;
   let sizeFallbackReason;
   let suggestedModel;
-  let response;
+  let image;
+  let imageBytes;
+  const endpointAttempts = [];
 
-  const sendImages = async (size) => {
+  const downloadImage = async (candidate, endpoint) => {
+    if (candidate.kind === 'base64') {
+      const bytes = Buffer.from(candidate.value.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+      if (!bytes.length) fail('The API returned an empty base64 image.');
+      return bytes;
+    }
+    const downloadHeaders = {};
+    if (key && new URL(candidate.value).host === new URL(endpoint).host) downloadHeaders.authorization = `Bearer ${key}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
+    try {
+      const download = await fetch(candidate.value, { headers: downloadHeaders, signal: controller.signal });
+      if (!download.ok) fail(`Image download failed: HTTP ${download.status}`);
+      const bytes = Buffer.from(await download.arrayBuffer());
+      if (!bytes.length) fail('Image download returned an empty file.');
+      return bytes;
+    } finally { clearTimeout(timer); }
+  };
+
+  const sendImages = async (size, endpoint) => {
     const requestArgs = { ...effectiveArgs, size };
     const requestPayload = buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, size);
     const requestHeaders = {};
     if (key) requestHeaders.authorization = `Bearer ${key}`;
     if (hasInputImage) {
-      return common.fetchJson(activeEndpoint, {
+      return common.fetchJson(endpoint, {
         method: 'POST',
         headers: requestHeaders,
         body: buildImagesEditForm(reference, requestArgs, requestPayload.prompt),
       }, timeoutSec, key, 'Keylink request failed');
     }
     requestHeaders['content-type'] = 'application/json; charset=utf-8';
-    return common.fetchJson(activeEndpoint, {
+    return common.fetchJson(endpoint, {
       method: 'POST', headers: requestHeaders, body: JSON.stringify(requestPayload),
     }, timeoutSec, key, 'Keylink request failed');
   };
 
-  let imagesError;
-  if (mode === 'images') {
+  const tryImages = async () => {
+    const endpoint = endpointForMode('images');
     const sizeCandidates = conservativeFallbackSizes(activeSize);
     while (true) {
       activePayload = buildImagesPayload(effectiveArgs, inputImageValue, hasInputImage, activeSize);
       try {
-        response = await sendImages(activeSize);
-        break;
+        const response = await sendImages(activeSize, endpoint);
+        const candidate = imagePayload(response, key);
+        const bytes = await downloadImage(candidate, endpoint);
+        return { mode: 'images', endpoint, payload: activePayload, image: candidate, bytes };
       } catch (error) {
         suggestedModel ||= suggestedModelFromError(error);
         if (isUnsupportedSizeError(error) && sizeCandidates.length) {
@@ -354,71 +391,80 @@ async function main() {
           activeSize = nextSize;
           continue;
         }
-        imagesError = error;
-        break;
+        throw error;
       }
     }
-  } else {
+  };
+
+  const tryChat = async () => {
+    const endpoint = endpointForMode('chat');
+    activePayload = buildChatPayload({ ...effectiveArgs, size: activeSize }, inputImageValue, hasInputImage);
     const chatHeaders = {};
     if (key) chatHeaders.authorization = `Bearer ${key}`;
     chatHeaders['content-type'] = 'application/json; charset=utf-8';
-    response = await common.fetchJson(activeEndpoint, {
+    const response = await common.fetchJson(endpoint, {
       method: 'POST', headers: chatHeaders, body: JSON.stringify(activePayload),
     }, timeoutSec, key, 'Keylink request failed');
+    const candidate = imagePayload(response, key);
+    const bytes = await downloadImage(candidate, endpoint);
+    return { mode: 'chat', endpoint, payload: activePayload, image: candidate, bytes };
+  };
+
+  let selected;
+  for (const endpointMode of attemptModes) {
+    try {
+      selected = endpointMode === 'images' ? await tryImages() : await tryChat();
+      endpointAttempts.push({ EndpointMode: endpointMode, Endpoint: selected.endpoint, Status: 'succeeded' });
+      break;
+    } catch (error) {
+      suggestedModel ||= suggestedModelFromError(error);
+      endpointAttempts.push({ EndpointMode: endpointMode, Endpoint: endpointForMode(endpointMode), Status: 'failed', Error: error.message });
+    }
   }
 
-  if (!response) {
-    if (!canAutoChatFallback || !isImagesEditFallbackError(imagesError)) {
-      const highResolutionFailure = isHighResolutionSize(activeSize);
-      const highResolutionMessage = highResolutionFailure
-        ? `High-resolution ${resolutionTier(activeSize)} request (${activeSize}) failed on model ${effectiveArgs.model}${isModelAvailabilityError(imagesError) ? ' because this selected model/channel is unavailable' : ''}; no lower-resolution fallback was attempted because the request asked for higher resolution.`
-        : undefined;
-      if (suggestedModel) fail(`${highResolutionMessage ? `${highResolutionMessage} ` : ''}${imagesError.message}; service suggested model ${suggestedModel}, but it was not auto-selected because availability is not advertised.`);
-      if (highResolutionMessage) fail(`${highResolutionMessage} ${imagesError.message}`);
-      throw imagesError;
+  if (!selected) {
+    if (attemptModes.length === 1) {
+      const error = endpointAttempts[0].Error;
+      const highResolutionMessage = isHighResolutionSize(activeSize)
+        ? `High-resolution ${resolutionTier(activeSize)} request (${activeSize}) failed on model ${effectiveArgs.model}; no lower-resolution fallback was attempted. `
+        : '';
+      fail(`${highResolutionMessage}${error}`);
     }
-    fallbackFromEndpoint = activeEndpoint;
-    fallbackReason = `Images Edits returned HTTP ${imagesError.status}`;
-    activeMode = 'chat';
-    activeEndpoint = common.endpoint(base, 'chat/completions');
-    activePayload = buildChatPayload({ ...effectiveArgs, size: activeSize }, inputImageValue, hasInputImage);
-    const fallbackHeaders = {};
-    if (key) fallbackHeaders.authorization = `Bearer ${key}`;
-    fallbackHeaders['content-type'] = 'application/json; charset=utf-8';
-    try {
-      response = await common.fetchJson(activeEndpoint, {
-        method: 'POST', headers: fallbackHeaders, body: JSON.stringify(activePayload),
-      }, timeoutSec, key, 'Keylink Chat fallback failed');
-    } catch (chatError) {
-      fail(`${imagesError.message}; Chat fallback failed: ${chatError.message}`);
-    }
+    const errors = endpointAttempts.map((attempt) =>
+      `${attempt.EndpointMode === 'chat' ? 'Chat' : (hasInputImage ? 'Images Edits' : 'Images Generations')} endpoint (${attempt.Endpoint}) failed: ${attempt.Error}`);
+    const highResolutionMessage = isHighResolutionSize(activeSize)
+      ? `High-resolution ${resolutionTier(activeSize)} request (${activeSize}) failed. `
+      : '';
+    fail(`${highResolutionMessage}Both Keylink endpoints failed for model ${effectiveArgs.model}. ${errors.join(' | ')} ${modelRetryGuidance(effectiveArgs.model)}`);
   }
-  const image = imagePayload(response, key);
+
+  activeMode = selected.mode;
+  activeEndpoint = selected.endpoint;
+  activePayload = selected.payload;
+  image = selected.image;
+  imageBytes = selected.bytes;
+  const failedAttempt = endpointAttempts.find((attempt) => attempt.Status === 'failed');
+  if (failedAttempt) {
+    fallbackFromEndpoint = failedAttempt.Endpoint;
+    fallbackReason = `${failedAttempt.EndpointMode} attempt failed: ${failedAttempt.Error}`;
+  }
   const extension = String(args.outputFormat || 'png').replace(/^\./, '');
   const output = path.resolve(args.outputPath || `keylink-image-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)}.${extension}`);
   if (fs.existsSync(output) && !args.overwrite) fail(`Output file already exists: ${output}. Use --overwrite to replace it.`);
   fs.mkdirSync(path.dirname(output), { recursive: true });
-  if (image.kind === 'base64') fs.writeFileSync(output, Buffer.from(image.value.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
-  else {
-    const downloadHeaders = {};
-    if (key && new URL(image.value).host === new URL(activeEndpoint).host) downloadHeaders.authorization = `Bearer ${key}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
-    try {
-      const download = await fetch(image.value, { headers: downloadHeaders, signal: controller.signal });
-      if (!download.ok) fail(`Image download failed: HTTP ${download.status}`);
-      fs.writeFileSync(output, Buffer.from(await download.arrayBuffer()));
-    } finally { clearTimeout(timer); }
-  }
+  fs.writeFileSync(output, imageBytes);
   const bytes = fs.statSync(output).size;
   if (!bytes) fail(`The saved image is empty: ${output}`);
   console.log(JSON.stringify({
     OutputPath: output, NextEditInputPath: output, Bytes: bytes, Operation: hasInputImage ? 'edit' : 'generate',
     RequestedModel: requestedModel, Model: effectiveArgs.model, EndpointMode: activeMode, Route: route, Endpoint: activeEndpoint,
     FallbackFromEndpoint: fallbackFromEndpoint, FallbackReason: fallbackReason,
-    RequestedSize: requestedSize, Size: activeSize, SizeFallbackFrom: sizeFallbackFrom,
+    AttemptOrder: attemptModes, EndpointAttempts: endpointAttempts,
+    RequestedSize: requestedSize, Size: activeMode === 'images' ? activeSize : undefined, SizeFallbackFrom: sizeFallbackFrom,
     SizeFallbackReason: sizeFallbackReason, SuggestedModel: suggestedModel,
-    ResolutionTier: resolutionTier(activeSize), RequestedTimeoutSec: requestedTimeoutSec, TimeoutSec: timeoutSec,
+    RequestedResolutionTier: resolutionTier(requestedSize), ResolutionTier: activeMode === 'images' ? resolutionTier(activeSize) : undefined,
+    PixelSizeContract: activeMode === 'images' ? 'requested' : 'not-guaranteed',
+    RequestedTimeoutSec: requestedTimeoutSec, TimeoutSec: timeoutSec,
   }, null, 2));
 }
 

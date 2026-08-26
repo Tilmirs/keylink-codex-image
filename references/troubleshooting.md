@@ -1,12 +1,12 @@
 # Keylink Image Troubleshooting
 
-Use this guide after a request fails. Preserve the user's requested model. Implicit known-model reference edits may make one Chat retry after an Images Edits capability error; explicit endpoint selections and non-capability errors are not retried.
+Use this guide after a request fails. Preserve the user's requested model. Automatic known-model requests try both endpoints in the model-specific order; explicit endpoint selections remain exact. HTTP errors, 200 responses without an image, and image-download failures are all recorded before the next automatic attempt.
 
 ## Model and resolution selection
 
 The API key is only a credential; it does not contain a model catalog. Run `node scripts/list_image_models.js` internally to query `/v1/models`. The helper filters likely image-capable models and returns capability evidence without exposing the key. If the response includes sizes or aspect ratios, they appear as advertised values. If it does not, the helper returns explicitly unverified suggestions. The model and resolution still require user selection when multiple choices are available; ask for that choice in natural language and translate it into script parameters internally.
 
-For `gpt-image-2` and the supported Gemini image models, use the conservative default sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition. Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, try `2560x1440` for 2K-class and `3840x2160` for 4K while preserving the selected model ID. If no 4K size is advertised, report the available sizes and ask for explicit approval before local upscaling. If a submitted high-resolution request fails, preserve the service's original status/body and explain that the model, channel, or requested size is unsupported; do not silently fall back to 1K or switch to Chat. A local resize produces a 4K canvas but not native 4K detail.
+For `gpt-image-2` and the supported Gemini image models, use the conservative default sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition. Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, try `2560x1440` for 2K-class and `3840x2160` for 4K while preserving the selected model ID. If no 4K size is advertised, report the available sizes and ask for explicit approval before local upscaling. If a submitted high-resolution request fails on the preferred endpoint, try the other endpoint with the same model; if both fail, preserve both service errors and explain whether the model, channel, or requested size is unsupported. Never silently fall back to 1K or switch model IDs. A local resize produces a 4K canvas but not native 4K detail.
 
 If a `3840`-class request is still running, allow at least the automatic 480-second timeout (8 minutes); an explicit longer timeout is honored.
 
@@ -24,17 +24,17 @@ After generation, inspect the saved file's actual width and height. For Chat Com
 
 ## Follow-up edit or uploaded image
 
-When the user asks to change part of an image generated earlier, reuse that generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. Known image models first use `/v1/images/edits` and upload the bytes as the multipart `image` field; explicit Chat mode uses `image_url`. If an implicit Images Edits request returns an endpoint/capability error such as `image is required`, the helper may make one Chat retry with the same image; JSON `input_image` is not a file upload for Images Edits. Surface both errors if the fallback also fails.
+When the user asks to change part of an image generated earlier, reuse that generation's saved output path as the next request's input image. When the user uploads an image, pass the attachment path directly with the new prompt. GPT image models first use `/v1/images/edits`; Gemini image models first use `/v1/chat/completions`; the other endpoint is attempted automatically when the first fails or returns no image. Images edits upload bytes as the multipart `image` field; Chat uses `image_url`. JSON `input_image` is not a file upload for Images Edits. Surface both endpoint errors if both attempts fail.
 
 If an edit appears to regenerate from the text prompt, inspect the command before diagnosing the model: confirm that `--input-image-path` equals the immediately preceding successful result's `NextEditInputPath`. A visually similar or older filename is not sufficient.
 
-## Model rejected by chat
+## Model rejected by one endpoint
 
-Symptom: `/v1/chat/completions` returns HTTP 400 or reports that an image model is unsupported.
+Symptom: `/v1/chat/completions` or an Images endpoint returns HTTP 400/404 or reports that an image model is unsupported.
 
-Cause: availability on `/v1/images/generations` does not imply chat-completions support. In the observed setup, `gpt-image-2` was rejected by chat.
+Cause: availability on one endpoint does not imply support on the other. GPT and Gemini channels can expose different endpoint capabilities.
 
-Action: omit `--endpoint-mode` for a known image model or pass `--endpoint-mode images`. Use explicit `chat` only when the user requests it or the deployment documents that model on chat.
+Action: omit `--endpoint-mode` for a known image model so the helper can try both endpoints in the preferred order. If both attempts fail, report both safe errors and ask whether to try another discovered image model. Use an explicit mode only when the user requests a fixed endpoint.
 
 ## Local proxy returns 404 for generations
 

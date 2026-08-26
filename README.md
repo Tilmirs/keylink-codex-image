@@ -57,15 +57,15 @@ bash ./install.sh
 - “用 Keylink 的第二个模型，横向高分辨率。”
 - “`$keylink-image` 用 Gemini，16:9，保留参考图的构图并改成水彩风格。”
 
-当可用模型或分辨率较多时，AI 会显示简短列表。用户可以回复模型名称、序号、`1536x1024`，或者“方形 / 横向 / 竖向”等自然语言。只有用户明确选择其他图片提供方或内置 ImageGen 时，才应离开 Keylink 流程。
+当可用模型或分辨率较多时，AI 会显示简短列表并优先推荐 `gpt-image-2`。用户可以回复模型名称、序号、`1536x1024`，或者“方形 / 横向 / 竖向”等自然语言。只有用户明确选择其他图片提供方或内置 ImageGen 时，才应离开 Keylink 流程。
 
 ## 能力
 
 - 支持 `POST /v1/chat/completions` 生图和参考图编辑。
-- 支持两种图生图流程：把上一轮生成结果作为下一轮输入继续修改，或直接把用户上传的图片和新的 prompt 一起发送；已知图片模型的文生图使用 Images Generations，带参考图时使用 `/v1/images/edits` 的 multipart `image` 文件字段，也可显式选择 Chat Completions，并返回保存后的修改图片。
-- 未显式指定端点时，Images Edits 只有在返回端点/能力类错误时才会用同一模型自动尝试一次 Chat；显式选择 `images`、`chat` 或自定义端点时不切换。
+- 支持两种图生图流程：把上一轮生成结果作为下一轮输入继续修改，或直接把用户上传的图片和新的 prompt 一起发送；Images Edits 使用 `/v1/images/edits` 的 multipart `image` 文件字段，Chat 使用 `/v1/chat/completions` 的 `image_url`，并返回保存后的修改图片。
+- 未显式指定端点时，`gpt-image-2` 先尝试 Images（Generations/Edits），再尝试 Chat；Gemini 图片模型先尝试 Chat，再尝试 Images。HTTP 错误、200 但没有图片、图片下载失败都会继续尝试另一个端点；两个端点都失败才汇总错误并询问是否切换模型。显式选择 `images`、`chat` 或自定义端点时不切换。
 - 支持 `POST /v1/images/generations` 文生图。
-- 自动路由以下模型到 Keylink Images（文生图使用 Generations，带参考图使用 Edits），同时仍允许用户显式选择 Chat Completions：
+- 自动识别以下模型并按模型类型尝试两个端点，同时仍允许用户显式固定 Chat Completions：
   - `gpt-image-2`
   - `gemini-3-pro-image`
   - `gemini-2.5-flash-image`
@@ -73,7 +73,7 @@ bash ./install.sh
 - 通过 `GET /v1/models` 发现当前凭据可用的图片模型和服务端公布的尺寸信息。
 - `gpt-image-2` 和支持的 Gemini 图片模型统一使用保守尺寸 `1024x1024`、`1536x1024`、`1024x1536`，按用户要求的画幅选择；平台没有公布尺寸时不假定 `2048x2048`。
 - “更高分辨率 / 高分辨率 / 高清 / 超高清 / 2K / 4K / UHD”或明确更大的像素尺寸都算高分辨率意图。16:9 高分辨率先尝试 `2560x1440`（2K 级），4K 尝试 `3840x2160`；用户选择的 `gpt-image-2` model ID 保持不变。
-- 如果 4K 在模型目录中没有公布，会先列出实际支持尺寸并询问是否允许本地放大；未得到同意前不会放大，也不会把低分辨率结果称为 4K。已经发出的高分辨率请求如果失败，会保留服务原始报错并解释是模型、渠道或尺寸不支持，不会静默降到 1K。
+- 如果 4K 在模型目录中没有公布，会先列出实际支持尺寸并询问是否允许本地放大；未得到同意前不会放大，也不会把低分辨率结果称为 4K。已经发出的高分辨率请求会按端点策略重试但不降到 1K、不换模型；如果 Chat 成功，会注明像素尺寸不保证。
 - 动态读取 Codex/CCSwitch 当前代理地址，并允许 AI 处理用户手动修改后的代理地址。
 - 支持常见 OpenAI 兼容返回格式，包括 URL、Base64 和 Chat 消息中的图片。
 
@@ -111,7 +111,7 @@ API Key 只负责鉴权，本身不包含模型列表或分辨率列表。skill 
 - 模型发现：`/v1/models`
 - Codex/CCSwitch 路由会在每次执行时读取当前 provider 地址，不固定 localhost 端口。
 - 手动代理覆盖顺序为：显式代理地址、`KEYLINK_PROXY_BASE_URL`、Codex `config.toml`。
-- 某些本地 Codex 路由只支持 chat/responses，不支持 Images Edits。对未显式指定端点的已知图片模型图生图，Images Edits 遇到明确的端点/能力错误时会自动用同一模型尝试一次 Chat；显式指定 `images`、`chat` 或自定义端点时保持用户选择不变。
+- 某些本地 Codex 路由只支持 chat/responses，不支持 Images Edits。自动模式会按 GPT/Gemini 顺序测试两个端点并汇总失败信息；显式指定 `images`、`chat` 或自定义端点时保持用户选择不变。
 
 ## 项目结构
 

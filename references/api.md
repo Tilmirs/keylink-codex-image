@@ -18,9 +18,9 @@ Credential precedence is explicit `--api-key`, explicit `--api-key-file`, then t
 
 `--route auto` applies these rules:
 
-1. If no endpoint mode was explicitly supplied and the model is `gpt-image-2`, `gemini-3-pro-image`, `gemini-2.5-flash-image`, or `gemini-3.1-flash-image`, select `images` mode.
-2. Send all images-mode requests directly to Keylink.
-3. For chat mode, reuse the active Codex provider when `config.toml` declares one; otherwise call Keylink directly.
+1. If no endpoint mode was explicitly supplied, GPT image models (`gpt-image-2`) try direct Images first and Chat second; Gemini image models (`gemini-3-pro-image`, `gemini-2.5-flash-image`, and `gemini-3.1-flash-image`) try Chat first and Images second.
+2. Automatic known-model attempts use the direct Keylink base so both `/v1/images/*` and `/v1/chat/completions` can be tested consistently. Explicit Chat mode may reuse the active Codex provider when `config.toml` declares one.
+3. HTTP errors, successful responses without an image payload, and image-download failures continue to the next automatic endpoint. Explicit endpoint/mode selections are never changed.
 4. Do not send a direct image API key to a loopback Codex route. `--use-ccswitch-credential` is valid only for a direct Keylink request.
 
 Use `--route direct` or `--route codex` to bypass automatic selection. An explicit `--endpoint` has highest precedence.
@@ -109,11 +109,11 @@ The helper saves the first image found in these forms:
 - A `data:image/...;base64,...` URI in a chat response
 - An image URL in chat message content, including Markdown image syntax
 
-The script does not switch models after an API error. For an implicit known-model reference edit only, an Images Edits capability error (HTTP 400/404/405/415/422/501 with an unsupported-edit or multipart indication) triggers one retry through Chat Completions with the same model and reference image. Authentication, rate-limit, content, network, and server errors are surfaced without retry; explicit endpoint selections are never changed. If both attempts fail, report both safe errors.
+The script never switches model IDs after an API error. For an implicit known-model request, it tries the two endpoints in the model-specific order above. Authentication, rate-limit, content, network, server, unsupported-endpoint, and missing-image responses are recorded as failed attempts; if both attempts fail, report both safe errors and ask whether to try another discovered image model.
 
 For a follow-up edit, pass the previously saved `OutputPath` as `--input-image-path`. For an uploaded attachment, pass its local path or an approved remote image URL. In Images mode the value is uploaded as the `image` multipart file to `/v1/images/edits`; in Chat mode it is sent as `image_url`. The helper adds an instruction to preserve unspecified content and requires an image payload in the response; it does not treat a text-only answer as a successful edit.
 
-When the implicit Images Edits path falls back to Chat, the result reports `EndpointMode: "chat"`, the effective Chat `Endpoint`, and `FallbackFromEndpoint`/`FallbackReason` fields so callers can distinguish native Images Edits from the compatibility retry.
+When an automatic endpoint retry is used, the result reports the effective `EndpointMode`/`Endpoint`, `AttemptOrder`, and `EndpointAttempts`; `FallbackFromEndpoint`/`FallbackReason` identify the failed attempt for compatibility with existing callers.
 
 ## Model and resolution discovery
 
@@ -123,7 +123,7 @@ When the implicit Images Edits path falls back to Chat, the result reports `Endp
 - `AdvertisedResolutionTiers`: advertised pixel sizes grouped as `OneK`, `TwoK`, or `FourK` using the long edge (`<1800`, `1800–3499`, and `>=3500`). These are classification aids, not a guarantee that every channel behind the model will accept every size.
 - `SuggestedSizes` and `SuggestedAspectRatios`: common candidates returned only when the service advertises no values; these are not claims of support.
 
-Resolution selection is policy-driven. `gpt-image-2` and the supported Gemini image models use the conservative default sizes `1024x1024`, `1536x1024`, and `1024x1536`; an unadvertised `2048x2048` is not assumed. “Higher resolution”, “high resolution”, “2K”, “4K”, “UHD”, and explicit larger dimensions are high-resolution intent. For 16:9, use `2560x1440` for 2K-class and `3840x2160` for 4K. Preserve the selected model ID when sending every tier. If a submitted high-resolution request fails, preserve the original status/body and explain that the model, channel, or requested dimensions are unsupported; do not silently retry at 1K or switch to Chat. If 4K is not advertised before a request, show the available sizes and ask for explicit approval before local upscaling; never describe a resized image as native 4K.
+Resolution selection is policy-driven. `gpt-image-2` and the supported Gemini image models use the conservative default sizes `1024x1024`, `1536x1024`, and `1024x1536`; an unadvertised `2048x2048` is not assumed. “Higher resolution”, “high resolution”, “2K”, “4K”, “UHD”, and explicit larger dimensions are high-resolution intent. For 16:9, use `2560x1440` for 2K-class and `3840x2160` for 4K. Preserve the selected model ID when sending every tier. If a submitted high-resolution request fails on one automatic endpoint, try the other endpoint with the same model and requested tier; if both fail, preserve both status/body errors and explain that the model, channel, or requested dimensions are unsupported. Do not silently retry at 1K or switch model IDs. A Chat success does not guarantee the requested pixel dimensions. If 4K is not advertised before a request, show the available sizes and ask for explicit approval before local upscaling; never describe a resized image as native 4K.
 
 For `3840`-class 4K requests, the helper raises the effective request timeout to at least 480 seconds (8 minutes). An explicitly longer timeout remains in effect.
 

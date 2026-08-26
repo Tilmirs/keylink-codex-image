@@ -50,13 +50,13 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 ## Routing invariants
 
 1. Keep both `POST /v1/chat/completions` and `POST /v1/images/generations` supported.
-2. With `-Route auto`, known image models currently default to direct Images Generations:
+2. With `-Route auto`, known GPT image models try direct Images first and Chat second; Gemini image models try Chat first and direct Images second:
    - `gpt-image-2`
    - `gemini-3-pro-image`
    - `gemini-2.5-flash-image`
    - `gemini-3.1-flash-image`
-3. An explicit `-EndpointMode chat` must continue to allow any model through Chat Completions and must remain on Chat if it fails.
-4. Known image models use `/v1/images/generations` JSON for text-only generation and first try `/v1/images/edits` multipart with an `image` file field for implicit reference-image editing. Only an implicit Images Edits capability error may trigger one Chat retry with the same model/reference; explicit `-EndpointMode images`, `-Endpoint`, and Chat selections must remain exact.
+3. An explicit `-EndpointMode chat` must continue to allow any model through `POST /v1/chat/completions` and must remain on Chat if it fails.
+4. Automatic known-model requests use `/v1/images/generations` JSON for text-only generation and `/v1/images/edits` multipart with an `image` file field for reference-image editing. They retry the other endpoint after HTTP errors, 200 responses without an image, or image-download failures. Explicit `-EndpointMode images`, `-Endpoint`, and Chat selections must remain exact.
 5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. The helper's `NextEditInputPath` is the canonical value to carry forward.
 6. The Codex/CCSwitch proxy address is dynamic. Read the active provider configuration on every run. Preserve the override order: `-ProxyBaseUrl`, `KEYLINK_PROXY_BASE_URL`, then Codex `config.toml`.
 7. A local proxy may support Chat Completions but return 404 for Images Generations. In that case, explain the route limitation and use direct Keylink only after the required credential approval.
@@ -79,11 +79,11 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - `SuggestedSizes` and `SuggestedAspectRatios` are unverified fallbacks and must be labeled as such.
 - For `gpt-image-2` and the supported Gemini image models, default to the conservative sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition; do not assume an unadvertised `2048x2048` size.
 - Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, use `2560x1440` for 2K-class and `3840x2160` for 4K. Preserve the selected `gpt-image-2` model ID for these requests.
-- If 4K is not advertised, list actual sizes and ask for explicit local-upscale approval before any local crop/upscale; never label a resized canvas as native 4K. If a submitted high-resolution request fails, preserve the original error and explain that the model/channel or size is unsupported; do not silently fall back to 1K or switch to Chat. For native edits, send the original image to `/v1/images/edits` with the selected size.
+- If 4K is not advertised, list actual sizes and ask for explicit local-upscale approval before any local crop/upscale; never label a resized canvas as native 4K. If a submitted high-resolution request fails on the preferred automatic endpoint, try the other endpoint with the same model and preserve both errors if it also fails; do not silently fall back to 1K or switch model IDs. For native edits, send the original image to `/v1/images/edits` with the selected size.
 - Enforce a minimum 480-second timeout for `3840`-class requests; preserve an explicitly longer timeout.
 - Nano Banana model-level guidance: `gemini-2.5-flash-image` is 1K-class; `gemini-3-pro-image` supports 1K/2K/4K; `gemini-3.1-flash-image` supports 512p/1K/2K/4K. Current Keylink `/v1/models` metadata overrides this guidance when available.
 - Use pixel `Size` for Images Generations and `AspectRatio` for Chat Completions. Reject incompatible parameters instead of silently ignoring them.
-- When Images Edits falls back to Chat, derive an aspect ratio from the requested pixel size when possible and report that Chat does not guarantee the requested pixel dimensions.
+- When an automatic Images request retries through Chat, derive an aspect ratio from the requested pixel size when possible and report that Chat does not guarantee the requested pixel dimensions.
 - Verify the actual width and height of the saved result because chat output may not expose a fixed pixel contract.
 
 ## Where to make common changes
