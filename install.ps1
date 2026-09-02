@@ -1,15 +1,17 @@
 [CmdletBinding()]
 param(
     [string]$SourcePath,
+    [switch]$Remote,
+    [string]$ArchiveUrl,
+    [string]$ProxyUrl,
     [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ([string]::IsNullOrWhiteSpace($SourcePath)) {
-    $SourcePath = $PSScriptRoot
-}
+$remoteDownloadRoot = $null
+$remoteSource = $false
 
 function Get-FirstEnvironmentValue {
     param([Parameter(Mandatory)][string]$Name)
@@ -23,12 +25,92 @@ function Get-FirstEnvironmentValue {
     return $null
 }
 
+function Get-ConfiguredProxyUrl {
+    if (-not [string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return $ProxyUrl.Trim()
+    }
+
+    foreach ($name in @('KEYLINK_IMAGE_PROXY_URL', 'HTTPS_PROXY', 'HTTP_PROXY')) {
+        $candidate = Get-FirstEnvironmentValue -Name $name
+        if ($candidate -and $candidate -match '^https?://') {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Remove-SafeTemporaryDirectory {
+    param(
+        [Parameter(Mandatory)][AllowNull()][string]$Path,
+        [Parameter(Mandatory)][string]$ExpectedParent,
+        [Parameter(Mandatory)][string]$ExpectedPrefix
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+
+    $resolvedPath = [IO.Path]::GetFullPath($Path)
+    $resolvedParent = [IO.Path]::GetFullPath((Split-Path -Parent $resolvedPath)).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $expectedResolvedParent = [IO.Path]::GetFullPath($ExpectedParent).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $leaf = Split-Path -Leaf $resolvedPath
+    if ($resolvedParent -ne $expectedResolvedParent -or -not $leaf.StartsWith($ExpectedPrefix, [StringComparison]::Ordinal)) {
+        throw "Refusing to remove an unexpected temporary directory: $resolvedPath"
+    }
+
+    Remove-Item -LiteralPath $resolvedPath -Recurse -Force
+}
+
+function Get-RemoteSkillSource {
+    param([Parameter(Mandatory)][string]$Url)
+
+    $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $downloadRoot = Join-Path $tempParent ('.keylink-image.remote-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+    $archivePath = Join-Path $downloadRoot 'source.zip'
+
+    try {
+        $uri = [Uri]$Url
+        if ($uri.Scheme -eq 'file') {
+            Copy-Item -LiteralPath $uri.LocalPath -Destination $archivePath -Force
+        }
+        else {
+            $request = @{
+                Uri = $Url
+                OutFile = $archivePath
+                UseBasicParsing = $true
+            }
+            $proxy = Get-ConfiguredProxyUrl
+            if ($proxy) {
+                $request.Proxy = $proxy
+            }
+            Invoke-WebRequest @request
+        }
+
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $downloadRoot -Force
+        $candidates = @(Get-ChildItem -LiteralPath $downloadRoot -Directory | Where-Object { $_.Name -ne 'source' })
+        if ($candidates.Count -ne 1) {
+            throw 'The downloaded archive must contain exactly one skill directory.'
+        }
+        return [pscustomobject]@{
+            Root = $candidates[0].FullName
+            DownloadRoot = $downloadRoot
+        }
+    }
+    catch {
+        Remove-SafeTemporaryDirectory -Path $downloadRoot -ExpectedParent $tempParent -ExpectedPrefix '.keylink-image.remote-'
+        throw
+    }
+}
+
 function Assert-KeylinkSkillFolder {
     param([Parameter(Mandatory)][string]$Path)
 
     $requiredPaths = @(
         'SKILL.md',
         'agents\openai.yaml',
+        'install.ps1',
+        'install.sh',
         'scripts\generate_image.js',
         'scripts\keylink_common.js',
         'scripts\list_image_models.js',
@@ -67,35 +149,55 @@ function Assert-KeylinkSkillFolder {
 }
 
 $skillName = 'keylink-image'
-$sourceRoot = [IO.Path]::GetFullPath($SourcePath)
-Assert-KeylinkSkillFolder -Path $sourceRoot
-
-$configuredCodexHome = Get-FirstEnvironmentValue -Name 'CODEX_HOME'
-if (-not $configuredCodexHome) {
-    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        throw 'Neither CODEX_HOME nor USERPROFILE is available.'
-    }
-    $configuredCodexHome = Join-Path $env:USERPROFILE '.codex'
-}
-
-$codexHome = [IO.Path]::GetFullPath($configuredCodexHome)
-$skillsRoot = [IO.Path]::GetFullPath((Join-Path $codexHome 'skills'))
-$destination = [IO.Path]::GetFullPath((Join-Path $skillsRoot $skillName))
-
-if ($sourceRoot.Equals($destination, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The source package is already the installed destination.'
-}
-if ((Split-Path -Parent $destination) -ne $skillsRoot -or (Split-Path -Leaf $destination) -ne $skillName) {
-    throw 'Refusing to install outside the expected Codex skills directory.'
-}
-
-New-Item -ItemType Directory -Path $skillsRoot -Force | Out-Null
-
-$stagingPath = Join-Path $skillsRoot ('.keylink-image.install-' + [Guid]::NewGuid().ToString('N'))
+$sourceRoot = $null
+$stagingPath = $null
 $backupPath = $null
-$runtimeItems = @('SKILL.md', 'agents', 'scripts', 'references')
 
 try {
+    if ($Remote) {
+        if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
+            throw 'Do not combine -Remote with -SourcePath.'
+        }
+        if ([string]::IsNullOrWhiteSpace($ArchiveUrl)) {
+            $ArchiveUrl = 'https://github.com/Tilmirs/keylink-codex-image/archive/refs/heads/main.zip'
+        }
+        $remotePackage = Get-RemoteSkillSource -Url $ArchiveUrl
+        $remoteDownloadRoot = $remotePackage.DownloadRoot
+        $sourceRoot = $remotePackage.Root
+        $remoteSource = $true
+    }
+    elseif ([string]::IsNullOrWhiteSpace($SourcePath)) {
+        $sourceRoot = $PSScriptRoot
+    }
+    else {
+        $sourceRoot = $SourcePath
+    }
+    $sourceRoot = [IO.Path]::GetFullPath($sourceRoot)
+    Assert-KeylinkSkillFolder -Path $sourceRoot
+
+    $configuredCodexHome = Get-FirstEnvironmentValue -Name 'CODEX_HOME'
+    if (-not $configuredCodexHome) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            throw 'Neither CODEX_HOME nor USERPROFILE is available.'
+        }
+        $configuredCodexHome = Join-Path $env:USERPROFILE '.codex'
+    }
+
+    $codexHome = [IO.Path]::GetFullPath($configuredCodexHome)
+    $skillsRoot = [IO.Path]::GetFullPath((Join-Path $codexHome 'skills'))
+    $destination = [IO.Path]::GetFullPath((Join-Path $skillsRoot $skillName))
+
+    if ($sourceRoot.Equals($destination, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The source package is already the installed destination.'
+    }
+    if ((Split-Path -Parent $destination) -ne $skillsRoot -or (Split-Path -Leaf $destination) -ne $skillName) {
+        throw 'Refusing to install outside the expected Codex skills directory.'
+    }
+
+    New-Item -ItemType Directory -Path $skillsRoot -Force | Out-Null
+
+    $stagingPath = Join-Path $skillsRoot ('.keylink-image.install-' + [Guid]::NewGuid().ToString('N'))
+    $runtimeItems = @('SKILL.md', 'agents', 'scripts', 'references', 'install.ps1', 'install.sh')
     New-Item -ItemType Directory -Path $stagingPath | Out-Null
     foreach ($item in $runtimeItems) {
         Copy-Item -LiteralPath (Join-Path $sourceRoot $item) -Destination $stagingPath -Recurse -Force
@@ -135,9 +237,16 @@ finally {
             Remove-Item -LiteralPath $stagingPath -Recurse -Force
         }
     }
+    if ($remoteDownloadRoot) {
+        $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+        Remove-SafeTemporaryDirectory -Path $remoteDownloadRoot -ExpectedParent $tempParent -ExpectedPrefix '.keylink-image.remote-'
+    }
 }
 
 Write-Host "Keylink Image installed: $destination"
+if ($remoteSource) {
+    Write-Host 'Source: GitHub main branch'
+}
 if ($backupPath) {
     Write-Host "Previous version backed up: $backupPath"
 }
@@ -149,5 +258,6 @@ if ($PassThru) {
         Destination = $destination
         BackupPath = $backupPath
         CodexHome = $codexHome
+        Source = if ($remoteSource) { 'GitHub main branch' } else { 'Local package' }
     }
 }

@@ -48,6 +48,8 @@ bash "$installer" --source "$repo_root"
 assert_file "$destination/SKILL.md"
 assert_file "$destination/scripts/generate_image.js"
 assert_file "$destination/scripts/generate_image.ps1"
+assert_file "$destination/install.sh"
+assert_file "$destination/install.ps1"
 
 printf 'old-version' > "$destination/old-version-marker.txt"
 bash "$installer" --source "$repo_root"
@@ -78,6 +80,8 @@ remote_codex_home="$temp_root/remote-codex-home"
 archive_url="file://$archive_path"
 mkdir -p "$archive_skill"
 cp "$repo_root/SKILL.md" "$archive_skill/"
+cp "$repo_root/install.sh" "$archive_skill/install.sh"
+cp "$repo_root/install.ps1" "$archive_skill/install.ps1"
 cp -R "$repo_root/agents" "$archive_skill/agents"
 cp -R "$repo_root/scripts" "$archive_skill/scripts"
 cp -R "$repo_root/references" "$archive_skill/references"
@@ -89,9 +93,51 @@ fi
 
 CODEX_HOME="$remote_codex_home" \
 KEYLINK_IMAGE_SKILL_ARCHIVE_URL="$archive_url" \
-bash -s < "$installer"
+bash -s -- --remote < "$installer"
 assert_file "$remote_codex_home/skills/keylink-image/SKILL.md"
 assert_file "$remote_codex_home/skills/keylink-image/scripts/generate_image.js"
 assert_file "$remote_codex_home/skills/keylink-image/scripts/generate_image.ps1"
+assert_file "$remote_codex_home/skills/keylink-image/install.sh"
+assert_file "$remote_codex_home/skills/keylink-image/install.ps1"
+
+printf 'old-remote-version' > "$remote_codex_home/skills/keylink-image/old-version-marker.txt"
+CODEX_HOME="$remote_codex_home" \
+KEYLINK_IMAGE_SKILL_ARCHIVE_URL="$archive_url" \
+bash -s -- --remote < "$installer"
+
+remote_backup_marker=""
+for marker in "$remote_codex_home"/skill-backups/keylink-image/*/old-version-marker.txt; do
+  if [[ -f "$marker" ]]; then
+    remote_backup_marker="$marker"
+    break
+  fi
+done
+if [[ -z "$remote_backup_marker" ]]; then
+  printf 'Assertion failed: remote update did not create a backup.\n' >&2
+  exit 1
+fi
+if [[ -e "$remote_codex_home/skills/keylink-image/old-version-marker.txt" ]]; then
+  printf 'Assertion failed: remote update did not replace old files.\n' >&2
+  exit 1
+fi
+
+printf 'keep-current-version' > "$remote_codex_home/skills/keylink-image/must-survive-invalid-update.txt"
+invalid_archive_parent="$temp_root/invalid-archive"
+invalid_archive_skill="$invalid_archive_parent/keylink-codex-image-main"
+invalid_archive_path="$temp_root/invalid-skill.tar.gz"
+mkdir -p "$invalid_archive_skill"
+printf '%s\n' '---' 'name: keylink-image' 'description: invalid test package' '---' > "$invalid_archive_skill/SKILL.md"
+tar -czf "$invalid_archive_path" -C "$invalid_archive_parent" keylink-codex-image-main
+invalid_archive_url="file://$invalid_archive_path"
+if command -v cygpath >/dev/null 2>&1; then
+  invalid_archive_url="file:///$(cygpath -am "$invalid_archive_path")"
+fi
+if CODEX_HOME="$remote_codex_home" \
+  KEYLINK_IMAGE_SKILL_ARCHIVE_URL="$invalid_archive_url" \
+  bash -s -- --remote < "$installer"; then
+  printf 'Assertion failed: invalid remote package was accepted.\n' >&2
+  exit 1
+fi
+assert_text 'keep-current-version' "$remote_codex_home/skills/keylink-image/must-survive-invalid-update.txt"
 
 printf 'All Keylink macOS/Linux installer tests passed.\n'

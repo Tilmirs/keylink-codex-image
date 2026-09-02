@@ -26,8 +26,9 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 | `references/api.md` | Request/response contract and endpoint details. |
 | `references/troubleshooting.md` | Failure classification and safe recovery guidance. |
 | `tests/` | Offline mock-server tests. Tests must not call the live Keylink API. |
-| `install.ps1` | Repeatable local install/update with staging and backup. |
-| `install.sh` | Repeatable macOS/Linux install/update and remote bootstrap from the public GitHub archive. |
+| `.github/workflows/ci.yml` | Cross-platform checks for runtime and installers. |
+| `install.ps1` | Repeatable local or remote Windows install/update with staging and backup. |
+| `install.sh` | Repeatable local or remote macOS/Linux install/update and remote bootstrap from the public GitHub archive. |
 
 ## Installation documentation
 
@@ -36,8 +37,10 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - Do not document a nonexistent `codex skills install` shell subcommand. Verify current behavior against the official Codex Skills documentation before changing installation instructions.
 - The built-in installer is for first installation and stops when the destination exists. Keep `install.ps1` and `install.sh` documented as repeatable local installation and update paths.
 - Keep the macOS Terminal one-liner pinned to the raw `install.sh` on this repository's `main` branch. The script must validate the downloaded package before replacing an installation.
+- Keep remote update mode available from an already installed copy: `install.ps1 -Remote` on Windows and `bash install.sh --remote` on macOS/Linux. Remote mode must download the pinned `main` archive, preserve the current installation on validation/download failure, and back up a replaced version.
+- Keep `KEYLINK_IMAGE_PROXY_URL` and the standard `HTTPS_PROXY`/`HTTP_PROXY` (and Unix `ALL_PROXY`) environment variables supported for remote downloads; do not hardcode a proxy port. Windows also supports `-ProxyUrl`, and Unix supports `--proxy-url`.
 - Keep `install.sh` compatible with the Bash 3.2 version shipped by older macOS releases. Do not require Homebrew, GNU-only flags, Python, or `realpath`; runtime Node.js is supplied by Codex and is not invoked by the installer.
-- Windows and Unix installers must install the same runtime files, preserve secrets and unrelated directories, stage replacements, and back up an existing version before updating.
+- Windows and Unix installers must install the same runtime files, including both installer entrypoints, preserve secrets and unrelated directories, stage replacements, and back up an existing version before updating.
 
 ## Skill selection and provider preference
 
@@ -57,7 +60,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
    - `gemini-3.1-flash-image`
 3. An explicit `-EndpointMode chat` must continue to allow any model through `POST /v1/chat/completions` and must remain on Chat if it fails.
 4. Automatic known-model requests use `/v1/images/generations` JSON for text-only generation and `/v1/images/edits` multipart with an `image` file field for reference-image editing. They retry the other endpoint after HTTP errors, 200 responses without an image, or image-download failures. Explicit `-EndpointMode images`, `-Endpoint`, and Chat selections must remain exact.
-5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. Dissatisfaction/correction language counts as a follow-up edit even without the word “edit”. The helper's `NextEditInputPath` is the canonical value to carry forward.
+5. A follow-up edit must use the immediately preceding successful output path as its reference unless the user explicitly supplies another image. Dissatisfaction/correction language counts as a follow-up edit even without the word “edit”. The helper's `NextEditInputPath` is the canonical value to carry forward. Clear edit intent may recover this path from a task-scoped state file keyed by `CODEX_THREAD_ID`; ambiguous intent must stop and ask whether to edit or generate, explicit input images override state, and `--operation generate` bypasses automatic reference recovery.
 6. The Codex/CCSwitch proxy address is dynamic. Read the active provider configuration on every run. Preserve the override order: `-ProxyBaseUrl`, `KEYLINK_PROXY_BASE_URL`, then Codex `config.toml`.
 7. A local proxy may support Chat Completions but return 404 for Images Generations. In that case, explain the route limitation and use direct Keylink only after the required credential approval.
 
@@ -78,6 +81,7 @@ This repository is a Codex skill, not a general-purpose CLI. Preserve the natura
 - `AdvertisedSizes` and `AdvertisedAspectRatios` are service-provided facts.
 - `SuggestedSizes` and `SuggestedAspectRatios` are unverified fallbacks and must be labeled as such.
 - For `gpt-image-2` and the supported Gemini image models, default to the conservative sizes `1024x1024`, `1536x1024`, or `1024x1536` according to the requested composition; do not assume an unadvertised `2048x2048` size.
+- Treat a bare dimension such as `3840` as incomplete. Ask for the intended aspect ratio or complete dimensions; never infer `3840x3840`.
 - If the user asks for higher clarity, a different resolution, or a non-default size, present the advertised sizes plus the conservative candidates as a short numbered list and wait for the user's selection before sending the request. Also offer `2560x1440` and `3840x2160` as explicitly unverified trial sizes that the channel may reject.
 - Treat “更高分辨率”, “高分辨率”, “高清”, “超高清”, “2K”, “4K”, “UHD”, and explicit larger dimensions as high-resolution intent. For 16:9, use `2560x1440` for 2K-class and `3840x2160` for 4K. Preserve the selected `gpt-image-2` model ID for these requests.
 - If 4K is not advertised, list actual sizes, offer `3840x2160` as an unverified trial that may be rejected, and ask whether to try the service or approve local upscaling before any local crop/upscale; never label a resized canvas as native 4K. If a submitted high-resolution request fails on the preferred automatic endpoint, try the other endpoint with the same model and preserve both errors if it also fails; do not silently fall back to 1K or switch model IDs. For native edits, send the original image to `/v1/images/edits` with the selected size.
@@ -124,4 +128,6 @@ If `python` is not on `PATH`, use the Python executable returned by Codex's work
 - Some CCSwitch/Codex routes expose chat or responses endpoints but not `/v1/images/generations`.
 - Approval infrastructure can fail before Keylink receives a request; do not misdiagnose that as an invalid key or model.
 - An API key does not itself contain a model or resolution catalog; discover that information from `/v1/models`.
+- A stale Node provider-section regex can falsely report a missing `base_url`; keep Codex provider parsing line-based and covered by a config regression test.
+- A reachable Codex proxy may return an empty `/v1/models` list, while direct discovery may independently return `401`; report these as separate route-capability and credential failures.
 - Users may manually change the proxy address, so do not hardcode a localhost port.

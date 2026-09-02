@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const common = require('./keylink_common');
 
@@ -273,19 +274,76 @@ function modelRetryGuidance(model) {
   return 'Ask the user whether to try another discovered image model; recommend gpt-image-2 when it is available.';
 }
 
-function looksLikeEditIntent(prompt) {
-  return /(上一张|上一次|刚才|这张图|当前图|在这个图上|不满意|画面不对|保留.*构图|\b(?:edit|change|add|remove|fix)\s+(?:this|the|that|image|picture)|\b(?:this|the|that)\s+(?:image|picture)\b)/i.test(String(prompt || ''));
+function stateFilePath(args) {
+  const configured = common.first(args.stateFile, process.env.KEYLINK_IMAGE_STATE_FILE);
+  if (configured) return path.resolve(configured);
+  const identity = common.first(process.env.CODEX_THREAD_ID, process.env.CODEX_SESSION_ID);
+  if (!identity) return undefined;
+  const safeIdentity = identity.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'session';
+  return path.join(os.tmpdir(), 'keylink-image-state', `${safeIdentity}.json`);
+}
+
+function readImageState(statePath) {
+  if (!statePath || !fs.existsSync(statePath)) return undefined;
+  try {
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const value = state.nextEditInputPath || state.NextEditInputPath || state.outputPath || state.OutputPath;
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    const outputPath = path.resolve(value);
+    let exists = false;
+    try { exists = fs.statSync(outputPath).isFile() && fs.statSync(outputPath).size > 0; } catch { exists = false; }
+    return { outputPath, exists };
+  } catch { return undefined; }
+}
+
+function writeImageState(statePath, outputPath, operation, model) {
+  if (!statePath) return;
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, JSON.stringify({
+    version: 1,
+    nextEditInputPath: outputPath,
+    outputPath,
+    operation,
+    model,
+    updatedAt: new Date().toISOString(),
+  }, null, 2), { encoding: 'utf8', mode: 0o600 });
+}
+
+function classifyImageIntent(prompt, hasPreviousImage) {
+  const text = String(prompt || '').trim();
+  if (!text) return 'generate';
+  if (/(?:从头|全新(?:生成|做)|重新生成(?:一张)?(?:全新的?)?|不要(?:参考|使用|沿用)(?:原图|上一张|这张图)?|不参考(?:原图|上一张|这张图)?|start from scratch|brand[- ]new|new image|without (?:using )?(?:the )?(?:reference|previous|original) image|do not use (?:the )?(?:reference|previous|original) image)/i.test(text)) {
+    return 'generate';
+  }
+  const hasReference = /(?:上一张|上一次|上回|刚才|之前(?:的)?(?:图|图片|结果)?|前一张|原图|参考图|这张(?:图|图片|图像)?|这个(?:图|图片|结果)|当前(?:图|图片|结果)|在(?:这|该|原)图上|基于(?:这|原)图|保留(?:刚才|原来|现有)|\b(?:this|that|the previous|the last|the current|the original|the reference)\s+(?:image|picture|result)\b|\bon\s+(?:this|the)\s+(?:image|picture)\b)/i.test(text);
+  const hasAction = /(?:改(?:成|为|一下|动)?|修改|调整|换成|替换|变成|变为|加上|添加|增加|补上|删掉|删除|去掉|移除|放大|缩小|移动|修正|纠正|修复|优化|改善|重绘|编辑|\b(?:edit|modify|change|add|remove|delete|replace|adjust|fix|resize|move|crop|retouch)\b)/i.test(text);
+  const hasIssue = /(?:不满意|不太满意|不对|不太对|不喜欢|有问题|不符合|不够|太(?:大|小|亮|暗|近|远|模糊|糊)|缺少|少了|多了|错误|错了|模糊|颜色不对|构图不对|比例不对|文字不对|人物太|背景不对|\b(?:dissatisfied|not happy|not right|wrong|missing|too (?:big|small|bright|dark|close|far|blurry)|looks? wrong|doesn't look|not enough)\b)/i.test(text);
+  const hasTarget = /(?:背景|人物|主体|脸|头发|衣服|颜色|构图|文字|字体|标志|位置|大小|比例|光线|阴影|天空|地面|前景|后景|风格|细节|\b(?:background|person|subject|face|hair|clothes|color|composition|text|font|logo|position|size|ratio|lighting|shadow|sky|foreground|style|detail)\b)/i.test(text);
+  const directChange = /(?:把|将|请把|帮我把|在(?:这|该|原)图上).{0,100}(?:改|修改|调整|换|替换|变成|添加|删除|去掉|移除|放大|缩小|移动|修正|修复)/i.test(text)
+    || /\b(?:edit|modify|retouch|remove|replace|adjust|fix|resize|crop)\s+(?:this|the|that|it|image|picture|background|person|subject)\b/i.test(text);
+  const vagueChange = /(?:再(?:优化|调整|改好|做得好|润色)(?:一下|一点)?|更好一点|改善一下|换个感觉|try again|make it better|improve(?: it)?|refine(?: it)?|polish(?: it)?|do better)/i.test(text);
+
+  if (hasReference && (hasAction || hasIssue)) return 'edit';
+  if (hasIssue && (hasAction || hasTarget || directChange)) return 'edit';
+  if (directChange) return 'edit';
+  if (vagueChange && !hasReference && !hasIssue && !hasTarget) return 'ambiguous';
+  if (hasPreviousImage && (hasAction || hasIssue || hasTarget)) return 'edit';
+  if (hasReference || hasIssue) return 'edit';
+  return 'generate';
 }
 
 async function main() {
   const args = common.parseArgs(process.argv.slice(2));
   common.validateArgs(args, [
     'prompt', 'model', 'endpointMode', 'route', 'aspectRatio', 'size', 'quality', 'background', 'outputFormat',
-    'responseFormat', 'inputImageUrl', 'inputImagePath', 'apiKey', 'apiKeyFile', 'baseUrl', 'proxyBaseUrl',
+    'responseFormat', 'inputImageUrl', 'inputImagePath', 'operation', 'stateFile', 'apiKey', 'apiKeyFile', 'baseUrl', 'proxyBaseUrl',
     'endpoint', 'outputPath', 'timeoutSec', 'overwrite', 'useCodexRoute', 'useCcswitchCredential', 'noAuth', 'dryRun',
   ], ['overwrite', 'useCodexRoute', 'useCcswitchCredential', 'noAuth', 'dryRun']);
   if (!args.prompt || !args.model) fail('--prompt and --model are required.');
   if (args.inputImageUrl && args.inputImagePath) fail('Specify either --input-image-url or --input-image-path, not both.');
+  const requestedOperation = String(args.operation || 'auto').toLowerCase();
+  if (!['auto', 'generate', 'edit'].includes(requestedOperation)) fail('--operation must be auto, generate, or edit.');
+  if (requestedOperation === 'generate' && (args.inputImageUrl || args.inputImagePath)) fail('--operation generate cannot use a reference image.');
   if (args.noAuth && (args.apiKey || args.apiKeyFile || args.useCcswitchCredential)) fail('Do not combine --no-auth with an API key source.');
   if (args.useCodexRoute && args.route) fail('Do not combine --use-codex-route with --route.');
   if (args.useCodexRoute && args.baseUrl) fail('Do not combine --use-codex-route with --base-url.');
@@ -300,10 +358,23 @@ async function main() {
     ? Math.max(requestedTimeoutSec, 480)
     : requestedTimeoutSec;
 
-  const hasInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
-  if (!hasInputImage && looksLikeEditIntent(args.prompt)) {
-    fail('This prompt looks like an image edit or continuation. Reuse the latest successful image with --input-image-path or --input-image-url instead of generating from text alone.');
+  const statePath = stateFilePath(args);
+  const previousImage = readImageState(statePath);
+  const hasExplicitInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
+  let detectedIntent = hasExplicitInputImage ? 'edit' : classifyImageIntent(args.prompt, Boolean(previousImage?.outputPath));
+  if (requestedOperation === 'generate') detectedIntent = 'generate';
+  if (requestedOperation === 'edit') detectedIntent = 'edit';
+  if (!hasExplicitInputImage && requestedOperation === 'auto' && detectedIntent === 'ambiguous') {
+    fail('This request could mean either editing the previous image or generating a new image. Ask the user which one they want before invoking the helper; use --operation edit for image-to-image or --operation generate for a new image.');
   }
+  let autoReferenced = false;
+  if (!hasExplicitInputImage && detectedIntent === 'edit') {
+    if (!previousImage?.outputPath) fail('This request requires a reference image, but no previous image is available for this task. Ask the user to upload an image.');
+    if (!previousImage.exists) fail(`The previous image for this task is no longer available: ${previousImage.outputPath}. Ask the user to upload the image again.`);
+    args.inputImagePath = previousImage.outputPath;
+    autoReferenced = true;
+  }
+  const hasInputImage = Boolean(args.inputImageUrl || args.inputImagePath);
   const endpointModeWasExplicit = args.endpointMode !== undefined;
   const mode = args.endpointMode || preferredEndpointModes(args.model)[0];
   if (!['chat', 'images'].includes(mode)) fail('--endpoint-mode must be chat or images.');
@@ -363,7 +434,8 @@ async function main() {
       Payload: payloadForMode(endpointMode, activeSize),
     }));
     return console.log(JSON.stringify({
-      Operation: hasInputImage ? 'edit' : 'generate', EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint,
+      Operation: hasInputImage ? 'edit' : 'generate', RequestedOperation: requestedOperation, DetectedIntent: detectedIntent,
+      AutoReferenced: autoReferenced, StateFile: statePath, EndpointMode: mode, Route: route, Endpoint: resolvedEndpoint,
       RequestFormat: attempts[0].RequestFormat, AttemptOrder: attemptModes, Attempts: attempts,
       RequestedModel: requestedModel, Model: effectiveArgs.model, RequestedSize: requestedSize,
       Size: activeSize, ResolutionTier: resolutionTier(activeSize), RequestedTimeoutSec: requestedTimeoutSec,
@@ -509,8 +581,17 @@ async function main() {
   fs.writeFileSync(output, imageBytes);
   const bytes = fs.statSync(output).size;
   if (!bytes) fail(`The saved image is empty: ${output}`);
-  console.log(JSON.stringify({
+  let stateSaved = false;
+  let stateWarning;
+  if (statePath) {
+    try {
+      writeImageState(statePath, output, hasInputImage ? 'edit' : 'generate', effectiveArgs.model);
+      stateSaved = true;
+    } catch (error) { stateWarning = error.message; }
+  }
+  const result = {
     OutputPath: output, NextEditInputPath: output, Bytes: bytes, Operation: hasInputImage ? 'edit' : 'generate',
+    RequestedOperation: requestedOperation, DetectedIntent: detectedIntent, AutoReferenced: autoReferenced,
     RequestedModel: requestedModel, Model: effectiveArgs.model, EndpointMode: activeMode, Route: route, Endpoint: activeEndpoint,
     FallbackFromEndpoint: fallbackFromEndpoint, FallbackReason: fallbackReason,
     AttemptOrder: attemptModes, EndpointAttempts: endpointAttempts,
@@ -519,7 +600,10 @@ async function main() {
     RequestedResolutionTier: resolutionTier(requestedSize), ResolutionTier: activeMode === 'images' ? resolutionTier(activeSize) : undefined,
     PixelSizeContract: activeMode === 'images' ? 'requested' : 'not-guaranteed',
     RequestedTimeoutSec: requestedTimeoutSec, TimeoutSec: timeoutSec,
-  }, null, 2));
+  };
+  if (statePath) { result.StateFile = statePath; result.StateSaved = stateSaved; }
+  if (stateWarning) result.StateWarning = stateWarning;
+  console.log(JSON.stringify(result, null, 2));
 }
 
 main().catch((error) => { console.error(error.message); process.exitCode = 1; });

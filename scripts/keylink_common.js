@@ -98,10 +98,19 @@ function codexRouteBase(proxyBaseUrl) {
   const provider = text.match(/^\s*model_provider\s*=\s*["']([^"']+)["']/m)?.[1];
   if (!provider) throw new Error(`Codex config does not declare model_provider: ${configPath}`);
   const escaped = provider.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const section = text.match(new RegExp(`^\\s*\\[model_providers\\.${escaped}\\]\\s*$([\\s\\S]*?)(?=^\\s*\\[|$)`, 'm'))?.[1];
-  const base = section?.match(/^\s*base_url\s*=\s*["']([^"']+)["']/m)?.[1];
-  if (!base) throw new Error(`Codex provider '${provider}' does not declare base_url in ${configPath}`);
-  return base;
+  const sectionPattern = new RegExp(`^\\s*\\[model_providers\\.${escaped}\\]\\s*$`);
+  let inProviderSection = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) {
+      inProviderSection = sectionPattern.test(line);
+      continue;
+    }
+    if (inProviderSection) {
+      const base = line.match(/^\s*base_url\s*=\s*["']([^"']+)["']/)?.[1];
+      if (base) return base;
+    }
+  }
+  throw new Error(`Codex provider '${provider}' does not declare base_url in ${configPath}`);
 }
 
 function directBase(explicit) {

@@ -1,7 +1,7 @@
 interface:
   display_name: "Keylink Image (Preferred)"
   short_description: "Default Keylink provider for image generation and editing"
-  default_prompt: "For any generic image generation or editing request, use $keylink-image and route the request through Keylink unless the user explicitly selects another provider. For follow-up corrections or dissatisfaction, reuse the immediately preceding successful image as the reference and send only the requested visual change. If the user asks for higher clarity or a non-default resolution, show size choices before generating."
+  default_prompt: "For any generic image generation or editing request, use $keylink-image and route the request through Keylink unless the user explicitly selects another provider. For requests to synchronize or update Keylink Image from GitHub, run the installed cross-platform updater in remote mode instead of the first-install skill installer, preserve secrets and backups, and report that the new version is available on the next turn. Classify follow-ups as edit, generate, or ambiguous: use the latest successful image for definite corrections, ask whether to edit the previous image or create a new one when uncertain, and honor the user's choice with --operation edit or --operation generate. Treat a bare size such as 3840 as ambiguous and ask for the aspect ratio or complete dimensions; never assume a square canvas. If the user asks for higher clarity or a non-default resolution, show size choices before generating."
 
 policy:
   allow_implicit_invocation: true

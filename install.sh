@@ -4,13 +4,15 @@ set -euo pipefail
 
 SKILL_NAME="keylink-image"
 ARCHIVE_URL="${KEYLINK_IMAGE_SKILL_ARCHIVE_URL:-https://github.com/Tilmirs/keylink-codex-image/archive/refs/heads/main.tar.gz}"
+PROXY_URL="${KEYLINK_IMAGE_PROXY_URL:-${HTTPS_PROXY:-${HTTP_PROXY:-${ALL_PROXY:-}}}}"
 SOURCE_ROOT=""
 DOWNLOAD_ROOT=""
 STAGING_PATH=""
 SKILLS_ROOT=""
+REMOTE_UPDATE=0
 
 usage() {
-  printf 'Usage: %s [--source PATH]\n' "${0##*/}"
+  printf 'Usage: %s [--source PATH] [--remote] [--archive-url URL] [--proxy-url URL]\n' "${0##*/}"
 }
 
 safe_remove_temp_dir() {
@@ -50,6 +52,8 @@ validate_skill_folder() {
   for relative_path in \
     "SKILL.md" \
     "agents/openai.yaml" \
+    "install.ps1" \
+    "install.sh" \
     "scripts/generate_image.js" \
     "scripts/keylink_common.js" \
     "scripts/list_image_models.js" \
@@ -111,18 +115,23 @@ download_source() {
 
   DOWNLOAD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/keylink-image-source.XXXXXX")"
   archive_path="$DOWNLOAD_ROOT/source.tar.gz"
-  curl -fsSL "$ARCHIVE_URL" -o "$archive_path"
+  if [[ -n "$PROXY_URL" ]]; then
+    curl -fsSL --proxy "$PROXY_URL" "$ARCHIVE_URL" -o "$archive_path"
+  else
+    curl -fsSL "$ARCHIVE_URL" -o "$archive_path"
+  fi
   tar -xzf "$archive_path" -C "$DOWNLOAD_ROOT"
 
   extracted_root=""
+  extracted_count=0
   for candidate in "$DOWNLOAD_ROOT"/*; do
     if [[ -d "$candidate" ]]; then
+      extracted_count=$((extracted_count + 1))
       extracted_root="$candidate"
-      break
     fi
   done
-  if [[ -z "$extracted_root" ]]; then
-    printf 'The downloaded archive did not contain a skill directory.\n' >&2
+  if [[ "$extracted_count" -ne 1 || -z "$extracted_root" ]]; then
+    printf 'The downloaded archive must contain exactly one skill directory.\n' >&2
     exit 1
   fi
   SOURCE_ROOT="$extracted_root"
@@ -138,6 +147,27 @@ while [[ $# -gt 0 ]]; do
       SOURCE_ROOT="$2"
       shift 2
       ;;
+    --remote)
+      SOURCE_ROOT=""
+      REMOTE_UPDATE=1
+      shift
+      ;;
+    --archive-url)
+      if [[ $# -lt 2 ]]; then
+        usage >&2
+        exit 2
+      fi
+      ARCHIVE_URL="$2"
+      shift 2
+      ;;
+    --proxy-url)
+      if [[ $# -lt 2 ]]; then
+        usage >&2
+        exit 2
+      fi
+      PROXY_URL="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -149,7 +179,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$SOURCE_ROOT" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+if [[ "$REMOTE_UPDATE" -eq 0 && -z "$SOURCE_ROOT" && -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   candidate_root="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   if [[ -f "$candidate_root/SKILL.md" ]]; then
     SOURCE_ROOT="$candidate_root"
@@ -186,12 +216,14 @@ SKILLS_ROOT="$(cd -- "$SKILLS_ROOT" && pwd -P)"
 destination="$SKILLS_ROOT/$SKILL_NAME"
 
 if [[ "$SOURCE_ROOT" == "$destination" ]]; then
-  printf 'The source package is already the installed destination.\n' >&2
+  printf 'The source package is already the installed destination. Use --remote to update from GitHub.\n' >&2
   exit 1
 fi
 
 STAGING_PATH="$(mktemp -d "$SKILLS_ROOT/.keylink-image.install.XXXXXX")"
 cp "$SOURCE_ROOT/SKILL.md" "$STAGING_PATH/"
+cp "$SOURCE_ROOT/install.ps1" "$STAGING_PATH/install.ps1"
+cp "$SOURCE_ROOT/install.sh" "$STAGING_PATH/install.sh"
 cp -R "$SOURCE_ROOT/agents" "$STAGING_PATH/agents"
 cp -R "$SOURCE_ROOT/scripts" "$STAGING_PATH/scripts"
 cp -R "$SOURCE_ROOT/references" "$STAGING_PATH/references"

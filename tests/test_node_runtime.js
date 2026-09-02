@@ -12,6 +12,8 @@ const usePowerShellGenerator = process.env.KEYLINK_TEST_POWERSHELL === '1';
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'keylink-node-test-'));
 const tinyPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xw3lWQAAAABJRU5ErkJggg==';
 const requests = [];
+const stateFile = path.join(temp, 'image-state.json');
+const common = require(path.join(root, 'scripts', 'keylink_common.js'));
 
 function parseMultipart(body, contentType) {
   const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.[1] || contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.[2];
@@ -52,7 +54,7 @@ function run(script, args, env) {
     })]
     : [path.join(root, 'scripts', script), ...args];
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, { env: { ...process.env, ...env } });
+    const child = spawn(command, commandArgs, { env: { ...process.env, KEYLINK_IMAGE_STATE_FILE: stateFile, ...env } });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -166,6 +168,29 @@ const server = http.createServer((request, response) => {
   const editedOutput = path.join(temp, 'edited.png');
   fs.writeFileSync(input, Buffer.from(tinyPng, 'base64'));
   try {
+    const codexConfigHome = path.join(temp, 'codex-home');
+    fs.mkdirSync(codexConfigHome);
+    fs.writeFileSync(path.join(codexConfigHome, 'config.toml'), [
+      'model_provider = "custom"',
+      '',
+      '[model_providers.custom]',
+      'name = "custom"',
+      'wire_api = "responses"',
+      'requires_openai_auth = true',
+      'base_url = "http://127.0.0.1:15721/v1"',
+      '',
+      '[profiles.default]',
+      'model = "gpt-5"',
+    ].join('\n'));
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexConfigHome;
+    try {
+      assert.equal(common.codexRouteBase(), 'http://127.0.0.1:15721/v1');
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+    }
+
     const models = await run('list_image_models.js', ['--base-url', base], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
     assert.equal(models.FilteredModelCount, 2);
     const gptModel = models.Models.find((model) => model.Id === 'gpt-image-2');
@@ -188,7 +213,7 @@ const server = http.createServer((request, response) => {
     );
     await assert.rejects(
       run('generate_image.js', ['--prompt', '这张图不满意，把背景改成蓝色', '--model', 'gpt-image-2', '--dry-run'], {}),
-      usePowerShellGenerator ? /looks like an image edit|input-image-path/i : /looks like an image edit or continuation.*input-image-path/
+      /requires a reference image|previous image|upload an image/i
     );
     const fourKTimeout = await run('generate_image.js', [
       '--prompt', '4K timeout test', '--model', 'gpt-image-2', '--size', '3840x2160', '--timeout-sec', '300', '--dry-run',
@@ -241,6 +266,33 @@ const server = http.createServer((request, response) => {
     assert.equal(generated.OutputPath, output);
     assert.equal(generated.NextEditInputPath, output);
     assert.ok(fs.statSync(output).size > 0);
+    assert.equal(generated.StateSaved, true);
+    const autoEditStart = requests.length;
+    const autoEdit = await run('generate_image.js', [
+      '--prompt', '这张图我不满意，人物太小，把背景改成蓝色', '--model', 'gpt-image-2', '--base-url', base,
+      '--output-path', path.join(temp, 'auto-edited.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(autoEdit.DetectedIntent, 'edit');
+    assert.equal(autoEdit.AutoReferenced, true);
+    assert.equal(autoEdit.Operation, 'edit');
+    assert.equal(requests[autoEditStart].path, '/v1/images/edits');
+    assert.ok(requests[autoEditStart].form.files.image.bytes.equals(Buffer.from(tinyPng, 'base64')));
+    await assert.rejects(
+      run('generate_image.js', ['--prompt', '再优化一下', '--model', 'gpt-image-2', '--dry-run'], {}),
+      /ambiguous|either editing the previous image or generating a new image/i
+    );
+    const confirmedEdit = await run('generate_image.js', [
+      '--prompt', '再优化一下', '--operation', 'edit', '--model', 'gpt-image-2', '--base-url', base,
+      '--output-path', path.join(temp, 'confirmed-edit.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(confirmedEdit.Operation, 'edit');
+    assert.equal(confirmedEdit.AutoReferenced, true);
+    const freshGeneration = await run('generate_image.js', [
+      '--prompt', '把背景改成蓝色，但从头生成一张新的', '--operation', 'generate', '--model', 'gpt-image-2',
+      '--size', '1024x1024', '--base-url', base, '--output-path', path.join(temp, 'fresh-generation.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(freshGeneration.Operation, 'generate');
+    assert.equal(freshGeneration.AutoReferenced, false);
     const nestedImage = await run('generate_image.js', [
       '--prompt', 'Nested image response', '--model', 'gpt-image-2', '--size', '1024x1024', '--base-url', base,
       '--output-path', path.join(temp, 'nested-image.png'),

@@ -11,6 +11,9 @@ param(
     [ValidateSet('chat', 'images')]
     [string]$EndpointMode,
 
+    [ValidateSet('auto', 'generate', 'edit')]
+    [string]$Operation,
+
     [ValidateSet('auto', 'direct', 'codex')]
     [string]$Route,
 
@@ -27,6 +30,7 @@ param(
 
     [string]$InputImageUrl,
     [string]$InputImagePath,
+    [string]$StateFile,
     [string]$ApiKey,
     [string]$ApiKeyFile,
     [string]$BaseUrl,
@@ -69,6 +73,7 @@ function Add-NodeOption {
 
 $bound = $PSBoundParameters
 Add-NodeOption -Name 'endpoint-mode' -Value $EndpointMode -IsBound $bound.ContainsKey('EndpointMode')
+Add-NodeOption -Name 'operation' -Value $Operation -IsBound $bound.ContainsKey('Operation')
 if ($UseCodexRoute) {
     $nodeArgs += '--use-codex-route'
 }
@@ -83,6 +88,7 @@ Add-NodeOption -Name 'output-format' -Value $OutputFormat -IsBound $bound.Contai
 Add-NodeOption -Name 'response-format' -Value $ResponseFormat -IsBound $bound.ContainsKey('ResponseFormat')
 Add-NodeOption -Name 'input-image-url' -Value $InputImageUrl -IsBound $bound.ContainsKey('InputImageUrl')
 Add-NodeOption -Name 'input-image-path' -Value $InputImagePath -IsBound $bound.ContainsKey('InputImagePath')
+Add-NodeOption -Name 'state-file' -Value $StateFile -IsBound $bound.ContainsKey('StateFile')
 Add-NodeOption -Name 'api-key' -Value $ApiKey -IsBound $bound.ContainsKey('ApiKey')
 Add-NodeOption -Name 'api-key-file' -Value $ApiKeyFile -IsBound $bound.ContainsKey('ApiKeyFile')
 Add-NodeOption -Name 'base-url' -Value $BaseUrl -IsBound $bound.ContainsKey('BaseUrl')

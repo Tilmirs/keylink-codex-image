@@ -42,6 +42,8 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $destination 'SKILL.md') -PathType Leaf) 'SKILL.md installed'
     Assert-True (Test-Path -LiteralPath (Join-Path $destination 'scripts\generate_image.js') -PathType Leaf) 'cross-platform generator installed'
     Assert-True (Test-Path -LiteralPath (Join-Path $destination 'scripts\generate_image.ps1') -PathType Leaf) 'PowerShell generator installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $destination 'install.ps1') -PathType Leaf) 'PowerShell updater installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $destination 'install.sh') -PathType Leaf) 'Unix updater installed'
     Assert-True (-not $first.BackupPath) 'first install does not create a backup'
 
     $installedMarker = Join-Path $destination 'old-version-marker.txt'
@@ -56,6 +58,52 @@ try {
 
     $expectedBackupRoot = [IO.Path]::GetFullPath((Join-Path $codexHome 'skill-backups\keylink-image'))
     Assert-True ((Split-Path -Parent $second.BackupPath) -eq $expectedBackupRoot) 'backup stays inside Codex skill-backups'
+
+    $archiveSkill = Join-Path $tempRoot 'keylink-codex-image-main'
+    $archivePath = Join-Path $tempRoot 'keylink-codex-image-main.zip'
+    $remoteCodexHome = Join-Path $tempRoot 'remote-codex-home'
+    New-Item -ItemType Directory -Path $archiveSkill | Out-Null
+    foreach ($item in @('SKILL.md', 'install.ps1', 'install.sh')) {
+        Copy-Item -LiteralPath (Join-Path $Installer "..\$item") -Destination $archiveSkill -Force
+    }
+    foreach ($directory in @('agents', 'scripts', 'references')) {
+        Copy-Item -LiteralPath (Join-Path $Installer "..\$directory") -Destination $archiveSkill -Recurse -Force
+    }
+    Compress-Archive -LiteralPath $archiveSkill -DestinationPath $archivePath -Force
+    $archiveUrl = ([Uri]$archivePath).AbsoluteUri
+
+    [Environment]::SetEnvironmentVariable('CODEX_HOME', $remoteCodexHome, 'Process')
+    $remoteFirst = & $Installer -Remote -ArchiveUrl $archiveUrl -PassThru
+    $remoteDestination = Join-Path $remoteCodexHome 'skills\keylink-image'
+    Assert-True ($remoteFirst.Destination -eq [IO.Path]::GetFullPath($remoteDestination)) 'remote install destination'
+    Assert-True ($remoteFirst.Source -eq 'GitHub main branch') 'remote install source'
+    Assert-True (Test-Path -LiteralPath (Join-Path $remoteDestination 'SKILL.md') -PathType Leaf) 'remote SKILL.md installed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $remoteDestination 'install.ps1') -PathType Leaf) 'remote updater installed'
+
+    $remoteMarker = Join-Path $remoteDestination 'old-version-marker.txt'
+    [IO.File]::WriteAllText($remoteMarker, 'old-remote-version')
+    $installedUpdater = Join-Path $remoteDestination 'install.ps1'
+    $remoteSecond = & $installedUpdater -Remote -ArchiveUrl $archiveUrl -PassThru
+    Assert-True ($remoteSecond.BackupPath -and (Test-Path -LiteralPath $remoteSecond.BackupPath -PathType Container)) 'remote update creates a backup'
+    Assert-True (Test-Path -LiteralPath (Join-Path $remoteSecond.BackupPath 'old-version-marker.txt') -PathType Leaf) 'remote backup preserves old installation'
+    Assert-True (-not (Test-Path -LiteralPath $remoteMarker)) 'remote update replaces old files'
+
+    $remoteSentinel = Join-Path $remoteDestination 'must-survive-invalid-update.txt'
+    [IO.File]::WriteAllText($remoteSentinel, 'keep-current-version')
+    $invalidSkill = Join-Path $tempRoot 'invalid-skill'
+    $invalidArchivePath = Join-Path $tempRoot 'invalid-skill.zip'
+    New-Item -ItemType Directory -Path $invalidSkill | Out-Null
+    [IO.File]::WriteAllText((Join-Path $invalidSkill 'SKILL.md'), "---`nname: keylink-image`ndescription: invalid test package`n---`n")
+    Compress-Archive -LiteralPath $invalidSkill -DestinationPath $invalidArchivePath -Force
+    $invalidUpdateFailed = $false
+    try {
+        & $installedUpdater -Remote -ArchiveUrl ([Uri]$invalidArchivePath).AbsoluteUri | Out-Null
+    }
+    catch {
+        $invalidUpdateFailed = $true
+    }
+    Assert-True $invalidUpdateFailed 'invalid remote package is rejected'
+    Assert-True ([IO.File]::ReadAllText($remoteSentinel) -eq 'keep-current-version') 'invalid update preserves current installation'
 
     'All Keylink installer tests passed.'
 }
