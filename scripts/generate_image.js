@@ -393,7 +393,10 @@ async function main() {
   let route = args.useCodexRoute ? 'codex' : (args.route || 'auto');
   if (args.endpoint) route = 'custom';
   if (route === 'auto') {
-    if (args.baseUrl || canTryBothEndpoints || mode === 'images') route = 'direct';
+    const proxyOverride = common.first(args.proxyBaseUrl, process.env.KEYLINK_PROXY_BASE_URL);
+    if (args.baseUrl) route = 'direct';
+    else if (proxyOverride) route = 'codex';
+    else if (canTryBothEndpoints || mode === 'images') route = 'direct';
     else { try { common.codexRouteBase(args.proxyBaseUrl); route = 'codex'; } catch { route = 'direct'; } }
   }
   if (!['direct', 'codex', 'custom'].includes(route)) fail('--route must be auto, direct, or codex.');

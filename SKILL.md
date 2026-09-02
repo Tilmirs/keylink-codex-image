@@ -104,7 +104,7 @@ node scripts/generate_image.js \
 - Default base URL: `https://keylinkclub.com`
 - When the endpoint mode is omitted, unknown models stay on Chat Completions; known GPT image models try Images then Chat, while Gemini image models try Chat then Images.
 - Alternate routes: `POST /v1/images/generations` for JSON generation and `POST /v1/images/edits` for multipart reference-image editing.
-- `--route auto` selects direct routing for automatic known-model endpoint attempts; an explicitly selected Chat mode can reuse the active Codex provider when available.
+- `--route auto` selects direct routing for automatic known-model endpoint attempts unless `--proxy-base-url` or `KEYLINK_PROXY_BASE_URL` explicitly supplies a proxy, in which case it uses that proxy; an explicitly selected Chat mode can reuse the active Codex provider when available.
 - `--route direct` always calls Keylink and requires a direct image credential.
 - `--route codex` reads the active provider URL from Codex configuration unless `--proxy-base-url` or `KEYLINK_PROXY_BASE_URL` overrides it.
 - Override the direct image base with `KEYLINK_IMAGE_BASE_URL`, `KEYLINK_BASE_URL`, or `--base-url`; override the complete URL with `--endpoint`.

@@ -80,6 +80,8 @@ The proxy host and port are not fixed. Resolution order is:
 
 Use `--dry-run` to confirm the complete endpoint before a live request. `--base-url` and `KEYLINK_BASE_URL` control direct Keylink routing, not the proxy.
 
+When `--proxy-base-url` or `KEYLINK_PROXY_BASE_URL` is present, automatic generation uses that proxy route, including known image models that normally prefer the direct Images endpoint. To bypass a configured proxy and use Keylink directly, select `--route direct` and provide a direct credential source; do not pass a proxy override with that route.
+
 ## CCSwitch credential access
 
 `--use-ccswitch-credential` requires approval to read the local CCSwitch database. It selects only the current `codex` provider, verifies that the provider and destination hosts are `keylinkclub.com`, and keeps the credential in memory. It does not reuse CCSwitch's current text model; `--model` remains authoritative.

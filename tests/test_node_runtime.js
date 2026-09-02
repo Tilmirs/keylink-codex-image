@@ -191,6 +191,12 @@ const server = http.createServer((request, response) => {
       else process.env.CODEX_HOME = previousCodexHome;
     }
 
+    const proxyOverride = await run('generate_image.js', [
+      '--prompt', 'proxy route test', '--model', 'gpt-image-2', '--proxy-base-url', base, '--dry-run',
+    ], {});
+    assert.equal(proxyOverride.Route, 'codex', 'an explicit proxy override must select the proxy route');
+    assert.equal(proxyOverride.Endpoint, `${base}/v1/images/generations`);
+
     const models = await run('list_image_models.js', ['--base-url', base], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
     assert.equal(models.FilteredModelCount, 2);
     const gptModel = models.Models.find((model) => model.Id === 'gpt-image-2');

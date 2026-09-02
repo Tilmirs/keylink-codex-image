@@ -141,6 +141,7 @@ API Key 只负责鉴权，本身不包含模型列表或分辨率列表。skill 
 - 模型发现：`/v1/models`
 - Codex/CCSwitch 路由会在每次执行时读取当前 provider 地址，不固定 localhost 端口。
 - 手动代理覆盖顺序为：显式代理地址、`KEYLINK_PROXY_BASE_URL`、Codex `config.toml`。
+- 设置 `--proxy-base-url` 或 `KEYLINK_PROXY_BASE_URL` 后，自动生图也会使用该代理；没有代理覆盖时，已知图片模型的自动模式默认直连 Keylink。需要绕过代理时使用 `--route direct`。
 - 某些本地 Codex 路由只支持 chat/responses，不支持 Images Edits。自动模式会按 GPT/Gemini 顺序测试两个端点并汇总失败信息；显式指定 `images`、`chat` 或自定义端点时保持用户选择不变。
 
 ## 项目结构
