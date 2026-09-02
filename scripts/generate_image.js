@@ -124,34 +124,41 @@ function imagePayload(response, key) {
 
   const preferredKeys = /^(b64_json|b64|base64|image_url|url|src|uri|image|photo|picture|content)$/i;
   const visited = new Set();
-  const walk = (value, hint = '') => {
-    if (value === null || value === undefined) return undefined;
-    if (typeof value === 'string') return fromString(value, hint);
-    if (typeof value !== 'object' || visited.has(value)) return undefined;
-    visited.add(value);
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const found = walk(item, hint);
+  const walk = (root) => {
+    const pending = [{ value: root, hint: '' }];
+    while (pending.length) {
+      const { value, hint } = pending.pop();
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string') {
+        const found = fromString(value, hint);
         if (found) return found;
+        continue;
       }
-      return undefined;
-    }
-    const entries = Object.entries(value);
-    for (const [name, child] of entries.filter(([name]) => preferredKeys.test(name))) {
-      const found = walk(child, name);
-      if (found) return found;
-    }
-    for (const [name, child] of entries) {
-      if (preferredKeys.test(name)) continue;
-      const found = walk(child, name);
-      if (found) return found;
+      if (typeof value !== 'object' || visited.has(value)) continue;
+      visited.add(value);
+      if (Array.isArray(value)) {
+        for (let index = value.length - 1; index >= 0; index -= 1) pending.push({ value: value[index], hint });
+        continue;
+      }
+      const entries = Object.entries(value);
+      // Push in reverse so preferred image fields are visited first while
+      // keeping traversal iterative for unusually deep gateway responses.
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [name, child] = entries[index];
+        if (!preferredKeys.test(name)) pending.push({ value: child, hint: name });
+      }
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [name, child] = entries[index];
+        if (preferredKeys.test(name)) pending.push({ value: child, hint: name });
+      }
     }
     return undefined;
   };
 
   const found = walk(response);
   if (found) return found;
-  const json = JSON.stringify(response);
+  let json;
+  try { json = JSON.stringify(response); } catch { json = '[unserializable response]'; }
   const preview = key ? json.slice(0, 1000).split(key).join('<redacted>') : json.slice(0, 1000);
   fail(`The API response did not contain a supported image payload. Response preview: ${preview}`);
 }

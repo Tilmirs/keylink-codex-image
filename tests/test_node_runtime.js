@@ -121,6 +121,11 @@ const server = http.createServer((request, response) => {
         if (payload.prompt.includes('Raw base64 image response')) {
           return response.end(JSON.stringify({ output: [{ content: [{ type: 'image', image: tinyPng }] }] }));
         }
+        if (payload.prompt.includes('Deep nested image response')) {
+          let nested = { image: tinyPng };
+          for (let depth = 0; depth < 3000; depth += 1) nested = { output: nested };
+          return response.end(JSON.stringify(nested));
+        }
       }
       response.end(JSON.stringify({ data: [{ b64_json: tinyPng }] }));
     });
@@ -311,6 +316,12 @@ const server = http.createServer((request, response) => {
     ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
     assert.equal(rawBase64Image.EndpointMode, 'images');
     assert.ok(fs.statSync(path.join(temp, 'raw-base64-image.png')).size > 0);
+    const deepNestedImage = await run('generate_image.js', [
+      '--prompt', 'Deep nested image response', '--model', 'gpt-image-2', '--size', '1024x1024', '--base-url', base,
+      '--output-path', path.join(temp, 'deep-nested-image.png'),
+    ], { KEYLINK_IMAGE_API_KEY: 'fake-test-key' });
+    assert.equal(deepNestedImage.EndpointMode, 'images');
+    assert.ok(fs.statSync(path.join(temp, 'deep-nested-image.png')).size > 0);
     const highResolution = await run('generate_image.js', [
       '--prompt', 'high-resolution test', '--model', 'gpt-image-2', '--size', '2560x1440', '--base-url', base,
       '--output-path', path.join(temp, 'high-resolution.png'),

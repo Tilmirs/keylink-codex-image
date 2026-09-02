@@ -50,6 +50,12 @@ Cause: the gateway received the edit prompt without its compatibility top-level 
 
 Action: recover the latest `NextEditInputPath`, pass it as `--input-image-path`, and let the helper emit both `messages[].content[].image_url` and `images[].image_url`. Keep only the requested visual delta in the prompt.
 
+Symptom: `invalid multipart form: request Content-Type isn't multipart/form-data` after a text-only `gpt-image-2` request.
+
+Cause: the selected Keylink channel is routing the Chat fallback through a multipart image contract, while the helper's Chat fallback correctly sends JSON. This is an endpoint/channel contract mismatch; it is not fixed by changing the prompt or adding a local proxy.
+
+Action: do not repeat the same Chat fallback blindly. Use the Images Generations endpoint on a channel that supports JSON generation, or choose a discovered Gemini image model whose Chat endpoint is supported. If the preceding Images request was charged but returned no image, retain the service request ID and ask the Keylink operator for a refund or failed-job credit.
+
 Symptom: the helper says it cannot recognize the returned image.
 
 Action: the response parser accepts standard `data[].b64_json`/`url`, Chat `image_url` blocks, `images[].image_url`, Markdown/data URLs, and nested base64 image fields. Preserve the safe response preview in the error; if the provider returns a new shape, add it to the parser and a mock regression test instead of treating a text-only response as an image.

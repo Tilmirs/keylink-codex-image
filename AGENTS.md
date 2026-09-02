@@ -130,4 +130,5 @@ If `python` is not on `PATH`, use the Python executable returned by Codex's work
 - An API key does not itself contain a model or resolution catalog; discover that information from `/v1/models`.
 - A stale Node provider-section regex can falsely report a missing `base_url`; keep Codex provider parsing line-based and covered by a config regression test.
 - A reachable Codex proxy may return an empty `/v1/models` list, while direct discovery may independently return `401`; report these as separate route-capability and credential failures.
+- Keep image response traversal iterative so deeply nested gateway responses cannot fail with `Maximum call stack size exceeded`; distinguish a service multipart contract error from a client request-format bug.
 - Users may manually change the proxy address, so do not hardcode a localhost port.
